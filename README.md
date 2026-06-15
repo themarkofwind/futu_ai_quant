@@ -170,7 +170,10 @@ sim_trader.py --source latest
 ```bash
 pip install -r requirements-dev.txt
 pytest
+ruff check futu_ai_quant tests   # 可选：与 CI 一致的 lint
 ```
+
+推送至 GitHub 后，`.github/workflows/ci.yml` 会自动跑 ruff + pytest（Python 3.12）。
 
 新功能开发后建议先跑测试再提交，覆盖策略信号、整手校验、决策 schema、模拟撮合等核心逻辑。
 
@@ -189,6 +192,14 @@ pytest
 
 ```bash
 pip install -r requirements.txt
+```
+
+依赖版本由 [pip-tools](https://github.com/jazzband/pip-tools) 锁定：直接依赖写在 `requirements.in`，生成 `requirements.txt`：
+
+```bash
+pip install -r requirements-dev.txt   # 含 pip-tools
+pip-compile requirements.in -o requirements.txt
+pip-compile requirements-dev.in -o requirements-dev.txt
 ```
 
 或手动安装：

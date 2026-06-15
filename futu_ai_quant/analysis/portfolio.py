@@ -6,7 +6,6 @@ from typing import Any
 from futu_ai_quant.config.settings import PORTFOLIO_MAX_SINGLE_WEIGHT_PCT
 from futu_ai_quant.domain.positions import resolve_option_underlying_code
 from futu_ai_quant.planning.option import empty_option_trade_plan
-from futu_ai_quant.planning.stock import empty_stock_trade_plan
 from futu_ai_quant.utils.numbers import safe_float
 
 

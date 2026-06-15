@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from futu import IndexOptionType, OpenQuoteContext, OptionType, RET_OK
+from futu import RET_OK, IndexOptionType, OpenQuoteContext, OptionType
 
 from futu_ai_quant.brokers.futu.options import _build_option_quote_leg
 from futu_ai_quant.config.settings import OPTION_MAX_DAYS, OPTION_MIN_DAYS
@@ -11,6 +11,9 @@ from futu_ai_quant.domain.positions import is_option_code
 from futu_ai_quant.sim.settings import OPTION_PREFIX_TO_STOCK, SIM_OPTION_CONTRACT_SIZE
 from futu_ai_quant.utils.logging import log
 from futu_ai_quant.utils.numbers import safe_float
+
+if TYPE_CHECKING:
+    from futu_ai_quant.sim.portfolio import PaperPortfolio
 
 
 def resolve_underlying_code(
@@ -118,6 +121,7 @@ def find_roll_open_leg(
                     "contract_size": meta["contract_size"],
                     "expire_time": meta.get("expire_time"),
                     "strike_price": meta.get("strike_price"),
+                    "option_type": str(meta.get("option_type") or option_type).upper(),
                     "source": f"决策 {rec_code} option_trade_plan",
                 }
             premium = safe_float(plan.get("premium_per_share"))
@@ -128,6 +132,7 @@ def find_roll_open_leg(
                     "contract_size": int(plan.get("contract_size") or SIM_OPTION_CONTRACT_SIZE),
                     "expire_time": plan.get("expire_date"),
                     "strike_price": plan.get("strike_price"),
+                    "option_type": option_type,
                     "source": f"决策 {rec_code} option_trade_plan",
                 }
 
@@ -171,6 +176,7 @@ def find_roll_open_leg(
                     "contract_size": meta["contract_size"],
                     "expire_time": meta.get("expire_time"),
                     "strike_price": meta.get("strike_price"),
+                    "option_type": option_type,
                     "source": f"期权链远月 {expiry}",
                 }
     except Exception as exc:

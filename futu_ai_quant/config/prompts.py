@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 SYSTEM_PROMPT = """你是一位资深港股量化对冲基金经理，精通正股技术面、波段降本与期权卖方策略。
 
 请基于输入的投资组合数据，结合以下港股交易环境给出专业研判：

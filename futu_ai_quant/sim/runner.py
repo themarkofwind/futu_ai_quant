@@ -14,10 +14,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from futu import Currency, OpenQuoteContext, RET_OK, TrdEnv
+from futu import RET_OK, Currency, OpenQuoteContext, TrdEnv
 
 from futu_ai_quant.brokers.futu.positions import get_position_list
 from futu_ai_quant.domain.positions import classify_positions, is_option_code
+from futu_ai_quant.market.triggers import price_in_trigger
 from futu_ai_quant.pipeline.cycle import run_analysis_cycle
 from futu_ai_quant.sim.engine import LocalSimEngine
 from futu_ai_quant.sim.io import load_decision_record, save_snapshot
@@ -45,7 +46,7 @@ def process_pending_orders(
         price = prices.get(code)
         low = safe_float(order.get("trigger_low"))
         high = safe_float(order.get("trigger_high"))
-        if not engine._price_in_trigger(price, low, high):
+        if not price_in_trigger(price, low, high):
             continue
         side = order["side"]
         qty = int(order["qty"])

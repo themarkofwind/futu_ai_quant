@@ -3,20 +3,20 @@ from __future__ import annotations
 from typing import Any
 
 import pandas as pd
-import pandas_ta as ta
-from futu import AuType, KLType, OpenQuoteContext, RET_OK
+import pandas_ta  # noqa: F401 — 注册 DataFrame.ta 访问器
+from futu import RET_OK, KLType, OpenQuoteContext
 
 from futu_ai_quant.config.settings import (
     ATR_LENGTH,
     BOLL_LENGTH,
     BOLL_STD,
-    KLINE_COUNT,
     MACD_FAST,
     MACD_SIGNAL,
     MACD_SLOW,
     RSI_LENGTH,
     VOLUME_MA_LENGTH,
 )
+from futu_ai_quant.indicators.kline_cache import fetch_history_kline_cached
 from futu_ai_quant.market.session import evaluate_volume_confirmed
 from futu_ai_quant.strategy.signals import (
     derive_macd_bias,
@@ -94,12 +94,7 @@ def compute_timeframe_indicators(
     }
 
     try:
-        ret, kline, _ = quote_ctx.request_history_kline(
-            code,
-            ktype=ktype,
-            autype=AuType.QFQ,
-            max_count=max_count,
-        )
+        ret, kline, _ = fetch_history_kline_cached(quote_ctx, code, ktype, max_count)
         if ret != RET_OK or kline is None or kline.empty:
             result["error"] = f"K线拉取失败: {kline}"
             return result

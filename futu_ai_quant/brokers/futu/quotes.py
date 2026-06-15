@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from futu import OpenQuoteContext, RET_OK
+from futu import RET_OK, OpenQuoteContext
 
 from futu_ai_quant.utils.logging import log
 from futu_ai_quant.utils.numbers import safe_float
+from futu_ai_quant.utils.retry import retry_call
 
 
 def fetch_snapshot_map(
@@ -30,7 +31,11 @@ def fetch_snapshot_map(
     for idx in range(0, len(codes), batch_size):
         batch = codes[idx : idx + batch_size]
         try:
-            ret, snapshot = quote_ctx.get_market_snapshot(batch)
+            ret, snapshot = retry_call(
+                lambda: quote_ctx.get_market_snapshot(batch),
+                label=f"快照 batch@{idx}",
+                expect_ret_ok=True,
+            )
             if ret != RET_OK or snapshot is None or snapshot.empty:
                 log("快照", f"批量快照失败: {snapshot}")
                 continue

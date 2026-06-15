@@ -17,6 +17,7 @@ from typing import Any
 from openai import OpenAI
 
 from futu_ai_quant.analysis.portfolio import collect_required_codes
+from futu_ai_quant.analysis.slim import slim_portfolio_for_ai
 from futu_ai_quant.config.prompts import SYSTEM_PROMPT
 from futu_ai_quant.decision.validation import find_missing_recommendation_codes
 from futu_ai_quant.utils.logging import log
@@ -33,6 +34,7 @@ def call_deepseek(client: OpenAI, portfolio_payload: dict[str, Any]) -> dict[str
     required_codes = collect_required_codes(portfolio_payload)
     required_count = len(required_codes)
     code_list_text = "、".join(required_codes)
+    slim_payload = slim_portfolio_for_ai(portfolio_payload)
 
     user_prompt = (
         f"请分析以下港股账户持仓数据，并输出符合 schema 的 JSON 交易建议。\n"
@@ -47,7 +49,7 @@ def call_deepseek(client: OpenAI, portfolio_payload: dict[str, Any]) -> dict[str
         "正股 trade_history 含当年 ytd_summary 与 recent_swing_window（近两周成交），波段建议须避免与近期已执行买卖冲突。\n"
         "务必严格区分 position_direction（如「卖出Call」「买入Put」），"
         "卖出期权与买入期权的 Theta/到期逻辑完全相反。\n"
-        f"{json.dumps(portfolio_payload, ensure_ascii=False, indent=2)}"
+        f"{json.dumps(slim_payload, ensure_ascii=False, separators=(',', ':'))}"
     )
 
     messages = [

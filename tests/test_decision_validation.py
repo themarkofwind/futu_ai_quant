@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from futu_ai_quant.decision.validation import find_missing_recommendation_codes, validate_decision_schema
+from futu_ai_quant.decision.validation import (
+    find_missing_recommendation_codes,
+    validate_decision_schema,
+)
 from futu_ai_quant.planning.stock import empty_stock_trade_plan
 
 

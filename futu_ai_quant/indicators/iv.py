@@ -13,6 +13,7 @@ from futu_ai_quant.config.settings import (
     IV_RANK_LOW,
     MAX_OPTION_CONTRACTS_PER_TRADE,
 )
+from futu_ai_quant.utils.files import atomic_write_text
 from futu_ai_quant.utils.numbers import safe_float
 
 
@@ -65,7 +66,8 @@ def record_iv_scan_snapshot(stock_code: str, candidates: list[dict[str, Any]]) -
 
     IV_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     path = _iv_history_path(stock_code)
-    path.write_text(
+    atomic_write_text(
+        path,
         json.dumps(
             {
                 "code": stock_code,
@@ -75,7 +77,6 @@ def record_iv_scan_snapshot(stock_code: str, candidates: list[dict[str, Any]]) -
             ensure_ascii=False,
             indent=2,
         ),
-        encoding="utf-8",
     )
 
 

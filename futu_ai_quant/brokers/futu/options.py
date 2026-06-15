@@ -18,11 +18,11 @@ from __future__ import annotations
 from typing import Any
 
 from futu import (
+    RET_OK,
     IndexOptionType,
     OpenQuoteContext,
     OptionStrategyLeg,
     OptionType,
-    RET_OK,
     StrategyLegAction,
 )
 
@@ -39,7 +39,6 @@ from futu_ai_quant.domain.positions import enrich_option_context, resolve_positi
 from futu_ai_quant.indicators.iv import annotate_iv_metrics
 from futu_ai_quant.indicators.technical import scale_atr_to_market
 from futu_ai_quant.planning.option import build_option_position_trade_plan
-from futu_ai_quant.planning.stock import empty_stock_trade_plan
 from futu_ai_quant.utils.logging import log
 from futu_ai_quant.utils.numbers import safe_float
 

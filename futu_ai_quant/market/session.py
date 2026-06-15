@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 
 from futu_ai_quant.config.settings import (
     ANALYSIS_INTERVAL_SEC,

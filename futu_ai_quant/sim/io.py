@@ -9,6 +9,7 @@ from futu_ai_quant.config.settings import DECISIONS_DIR
 from futu_ai_quant.sim.jsonl import append_jsonl
 from futu_ai_quant.sim.portfolio import PaperPortfolio
 from futu_ai_quant.sim.settings import METRICS_FILE, SNAPSHOTS_FILE
+from futu_ai_quant.utils.files import atomic_write_text
 from futu_ai_quant.utils.logging import log
 
 
@@ -54,8 +55,10 @@ def save_snapshot(
         "pending_orders": mtm["pending_orders"],
         "last_decision_id": decision_id,
     }
-    METRICS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    METRICS_FILE.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(
+        METRICS_FILE,
+        json.dumps(metrics, ensure_ascii=False, indent=2),
+    )
 
 
 def print_report() -> None:

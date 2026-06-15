@@ -4,6 +4,8 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from futu_ai_quant.domain.positions import infer_option_right
+from futu_ai_quant.market.triggers import price_in_trigger
 from futu_ai_quant.sim.broker import FutuSimBroker
 from futu_ai_quant.sim.fees import HKCostModel
 from futu_ai_quant.sim.portfolio import PaperPortfolio
@@ -23,23 +25,13 @@ class LocalSimEngine:
         self.cost_model = cost_model
         self.futu_broker = futu_broker
 
-    def _price_in_trigger(
-        self,
-        price: float | None,
-        low: float | None,
-        high: float | None,
-    ) -> bool:
-        if price is None:
-            return False
-        if low is None and high is None:
-            return True
-        if low is not None and high is not None:
-            return low <= price <= high
-        if low is not None:
-            return price >= low
-        if high is not None:
-            return price <= high
-        return False
+    @staticmethod
+    def _roll_open_action(open_leg: dict[str, Any], held_code: str) -> str:
+        opt_type = str(open_leg.get("option_type") or "").upper()
+        if not opt_type:
+            inferred = infer_option_right(str(open_leg.get("code") or held_code))
+            opt_type = (inferred or "CALL").upper()
+        return "sell_put" if opt_type == "PUT" else "sell_call"
 
     def should_execute_now(
         self,
@@ -55,13 +47,13 @@ class LocalSimEngine:
         if SIM_EXECUTION_MODE == "immediate":
             return True, "immediate 模式立即成交"
         if SIM_EXECUTION_MODE == "trigger":
-            if self._price_in_trigger(price, trigger_low, trigger_high):
+            if price_in_trigger(price, trigger_low, trigger_high):
                 return True, "价格进入触发区间"
             return False, "等待触发价"
         # hybrid
         if rec_action in ("BUY", "SELL"):
             return True, f"action={rec_action} 立即成交"
-        if self._price_in_trigger(price, trigger_low, trigger_high):
+        if price_in_trigger(price, trigger_low, trigger_high):
             return True, "HOLD 但价格进入触发区间"
         return False, "等待触发价"
 
@@ -291,7 +283,7 @@ class LocalSimEngine:
             contract_size=new_contract_size,
             decision_id=decision_id,
             reason=f"ROLL 开远月 ({open_leg.get('source')})",
-            action="sell_call",
+            action=self._roll_open_action(open_leg, held_code),
         )
         log(
             "ROLL",

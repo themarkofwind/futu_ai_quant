@@ -4,7 +4,6 @@ from typing import Any
 
 from futu_ai_quant.indicators.technical import scale_atr_to_market
 from futu_ai_quant.market.fees import (
-    estimate_hk_stock_trade_fees,
     swing_trade_meets_cost_threshold,
 )
 from futu_ai_quant.market.lot import calc_full_lot_trade_qty, resolve_lot_size

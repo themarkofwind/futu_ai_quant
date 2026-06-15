@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from futu import OpenSecTradeContext, RET_OK, TrdEnv, TrdMarket
+from futu import RET_OK, OpenSecTradeContext, TrdEnv, TrdMarket
 
 from futu_ai_quant.config.settings import (
     FUTU_HISTORY_QUERY_DAYS,
@@ -15,6 +15,7 @@ from futu_ai_quant.config.settings import (
     TRADE_RECENT_SWING_DAYS,
 )
 from futu_ai_quant.domain.positions import is_option_code, resolve_option_underlying_code
+from futu_ai_quant.utils.files import atomic_write_text
 from futu_ai_quant.utils.logging import log
 from futu_ai_quant.utils.numbers import safe_float
 
@@ -135,7 +136,7 @@ def _save_ytd_trade_cache(year: int, deals: list[dict[str, Any]], *, source: str
         "deal_count": len(deals),
         "deals": deals,
     }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
     return path
 
 

@@ -14,6 +14,7 @@ from futu_ai_quant.sim.settings import (
     SIM_OPTION_CONTRACT_SIZE,
     TRADES_FILE,
 )
+from futu_ai_quant.utils.files import atomic_write_text
 from futu_ai_quant.utils.logging import log
 from futu_ai_quant.utils.numbers import safe_float
 
@@ -52,8 +53,10 @@ class PaperPortfolio:
 
     def save(self) -> None:
         self.data["updated_at"] = datetime.now().isoformat()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_text(
+            self.path,
+            json.dumps(self.data, ensure_ascii=False, indent=2),
+        )
 
     def init_from_mirror(
         self,

@@ -12,9 +12,10 @@ from __future__ import annotations
 import os
 
 import pandas as pd
-from futu import OpenSecTradeContext, RET_OK, TrdEnv, TrdMarket
+from futu import RET_OK, OpenSecTradeContext, TrdEnv, TrdMarket
 
 from futu_ai_quant.utils.logging import log
+from futu_ai_quant.utils.retry import retry_call
 
 
 def get_position_list(trade_ctx: OpenSecTradeContext) -> tuple[int, pd.DataFrame | str]:
@@ -25,10 +26,14 @@ def get_position_list(trade_ctx: OpenSecTradeContext) -> tuple[int, pd.DataFrame
 
     Returns (ret_code, DataFrame | error_msg)。
     """
-    return trade_ctx.position_list_query(
-        trd_env=TrdEnv.REAL,
-        position_market=TrdMarket.HK,
-        refresh_cache=True,
+    return retry_call(
+        lambda: trade_ctx.position_list_query(
+            trd_env=TrdEnv.REAL,
+            position_market=TrdMarket.HK,
+            refresh_cache=True,
+        ),
+        label="持仓查询",
+        expect_ret_ok=True,
     )
 
 

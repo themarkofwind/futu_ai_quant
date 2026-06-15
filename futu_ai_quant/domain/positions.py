@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 import pandas as pd
-from futu import OpenQuoteContext, RET_OK
+from futu import RET_OK, OpenQuoteContext
 
 from futu_ai_quant.config.settings import HK_OPTION_CODE_PATTERN
 from futu_ai_quant.utils.logging import log

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
-from futu import OpenSecTradeContext, TrdMarket
+from futu import OpenSecTradeContext
 
 OpenHKTradeContext = OpenSecTradeContext

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from futu_ai_quant.config.settings import DECISIONS_DIR, PAYLOADS_DIR
+from futu_ai_quant.utils.files import atomic_write_text
 
 
 def _analysis_timestamp() -> str:
@@ -45,10 +46,10 @@ def save_portfolio_payload_record(
         "summary": portfolio_payload.get("summary"),
         "portfolio_payload": portfolio_payload,
     }
+    text = json.dumps(record, ensure_ascii=False, indent=2)
     path = PAYLOADS_DIR / f"payload_{ts}.json"
-    path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-    latest = PAYLOADS_DIR / "latest_payload.json"
-    latest.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(path, text)
+    atomic_write_text(PAYLOADS_DIR / "latest_payload.json", text)
     return path
 
 
@@ -72,10 +73,10 @@ def save_decision_record(
     }
     if payload_path is not None:
         record["payload_path"] = str(payload_path)
+    text = json.dumps(record, ensure_ascii=False, indent=2)
     path = DECISIONS_DIR / f"decision_{ts}.json"
-    path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-    latest = DECISIONS_DIR / "latest.json"
-    latest.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(path, text)
+    atomic_write_text(DECISIONS_DIR / "latest.json", text)
     return path
 
 

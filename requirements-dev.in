@@ -1,0 +1,6 @@
+# 开发依赖（变更后请运行: pip-compile requirements-dev.in）
+-r requirements.in
+-e .
+pytest>=8.0
+ruff>=0.8
+pip-tools>=7.4

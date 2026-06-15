@@ -181,7 +181,7 @@ cli/sim.main()
 | `position_list_query` | `brokers/futu/positions.get_position_list` | 港股实盘持仓 |
 | `unlock_trade` | `brokers/futu/positions.maybe_unlock_trade` | 交易解锁 |
 | `get_market_snapshot` | `brokers/futu/quotes.fetch_snapshot_map` | 正股现价、每手股数 |
-| `request_history_kline` | `indicators/technical.compute_timeframe_indicators` | 日K/周K（前复权） |
+| `request_history_kline` | `indicators/technical.compute_timeframe_indicators` | 日K/周K（前复权）；经 ``indicators/kline_cache`` 短期缓存 |
 | `get_option_expiration_date` | `brokers/futu/options.scan_sell_option_candidates` | 期权到期日列表 |
 | `get_option_chain` | 同上 | 指定到期日的期权链 |
 | `get_option_quote` | `brokers/futu/options.fetch_option_metrics` 等 | 期权 IV、Delta、Theta |
@@ -202,7 +202,9 @@ cli/sim.main()
 | 客户端 | `openai.OpenAI`（`base_url` 默认 `https://api.deepseek.com`） |
 | 模型 | `deepseek-chat` |
 | 格式 | `response_format={"type": "json_object"}` |
+| 输入 | 全量 payload 存档于 `data/payloads/`；API 调用前经 `analysis.slim.slim_portfolio_for_ai` 去掉冗余字段 |
 | 重试 | 若 `recommendations` 缺标的，最多补全 2 次 |
+| 降级 | DeepSeek 调用或校验失败时，自动 fallback 到规则引擎（`decision_source=rules_fallback`） |
 | Prompt | `config/prompts.SYSTEM_PROMPT` + 动态 user prompt（含 portfolio JSON） |
 
 ---
@@ -256,5 +258,8 @@ trade.close()
 | `VOLUME_FILTER` | `session_adjusted` | 日K量比过滤策略 |
 | `DECISIONS_DIR` | `data/decisions` | 决策 JSON 目录 |
 | `PAYLOADS_DIR` | `data/payloads` | 大模型输入存档目录 |
+| `KLINE_CACHE_ENABLED` | `0` | `1` 开启 K 线缓存（默认关） |
+| `KLINE_CACHE_TTL_SEC` | `0` | 日K 缓存秒数；启用时建议小于分析间隔 |
+| `KLINE_WEEKLY_CACHE_TTL_SEC` | `14400` | 周K 缓存秒数（仅 `ENABLED=1` 时有效） |
 | `SIM_EXECUTION_MODE` | `hybrid` | 模拟：`immediate` / `trigger` / `hybrid` |
 | `SIM_BACKEND` | `local` | 模拟：`local` / `futu` / `both` |

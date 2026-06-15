@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.8", "pip-tools>=7.4"]
 
 [project.scripts]
 futu-analyze = "futu_ai_quant.cli.analyze:main"
@@ -31,3 +31,11 @@ include = ["futu_ai_quant*"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501", "UP047"]

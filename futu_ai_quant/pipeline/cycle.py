@@ -15,7 +15,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from futu import OpenQuoteContext, OpenSecTradeContext, RET_OK
+from futu import RET_OK, OpenQuoteContext, OpenSecTradeContext
 from openai import OpenAI
 
 from futu_ai_quant.analysis.portfolio import (
@@ -35,6 +35,37 @@ from futu_ai_quant.decision.validation import validate_decision_schema
 from futu_ai_quant.domain.positions import classify_positions
 from futu_ai_quant.history.trades import attach_trade_history_to_stocks, load_ytd_trade_history
 from futu_ai_quant.utils.logging import log
+
+
+def _resolve_decision(
+    *,
+    use_ai: bool,
+    ai_client: OpenAI | None,
+    payload: dict[str, Any],
+    stocks: list[dict[str, Any]],
+    options: list[dict[str, Any]],
+    required_codes: list[str],
+    stocks_by_code: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], str]:
+    """生成并校验决策；AI 失败时自动降级为规则引擎。"""
+    if not use_ai:
+        log("规则", f"跳过 DeepSeek，使用规则引擎生成 {len(required_codes)} 条建议...")
+        decision = build_rules_decision(stocks, options)
+        return validate_decision_schema(decision, required_codes, stocks_by_code), "rules"
+
+    if ai_client is None:
+        raise RuntimeError("use_ai=True 但未提供 DeepSeek 客户端")
+
+    log("模型", f"开始调用 DeepSeek，需为 {len(required_codes)} 个持仓逐一生成建议...")
+    try:
+        decision = call_deepseek(ai_client, payload)
+        decision = validate_decision_schema(decision, required_codes, stocks_by_code)
+        return decision, "deepseek"
+    except Exception as exc:
+        log("模型", f"DeepSeek 决策失败，降级规则引擎: {exc}")
+        decision = build_rules_decision(stocks, options)
+        decision = validate_decision_schema(decision, required_codes, stocks_by_code)
+        return decision, "rules_fallback"
 
 
 def run_analysis_cycle(
@@ -182,7 +213,6 @@ def run_analysis_cycle(
     payload = build_portfolio_payload(stocks, options)
     required_codes = collect_required_codes(payload)
     stocks_by_code = {s["code"]: s for s in stocks}
-    decision_source = "deepseek" if use_ai else "rules"
 
     if save_payload and not save_decision:
         from futu_ai_quant.decision.storage import save_portfolio_payload_record
@@ -190,23 +220,22 @@ def run_analysis_cycle(
         payload_saved_path = save_portfolio_payload_record(
             payload,
             required_codes=required_codes,
-            decision_source=decision_source,
+            decision_source="deepseek" if use_ai else "rules",
         )
         log("输入", f"模型输入已保存: {payload_saved_path}")
     else:
         payload_saved_path = None
 
-    if use_ai:
-        if ai_client is None:
-            raise RuntimeError("use_ai=True 但未提供 DeepSeek 客户端")
-        log("模型", f"开始调用 DeepSeek，需为 {len(required_codes)} 个持仓逐一生成建议...")
-        decision = call_deepseek(ai_client, payload)
-    else:
-        log("规则", f"跳过 DeepSeek，使用规则引擎生成 {len(required_codes)} 条建议...")
-        decision = build_rules_decision(stocks, options)
-
     try:
-        decision = validate_decision_schema(decision, required_codes, stocks_by_code)
+        decision, decision_source = _resolve_decision(
+            use_ai=use_ai,
+            ai_client=ai_client,
+            payload=payload,
+            stocks=stocks,
+            options=options,
+            required_codes=required_codes,
+            stocks_by_code=stocks_by_code,
+        )
         saved_path: Path | None = None
         if save_decision:
             if save_payload:
@@ -228,7 +257,12 @@ def run_analysis_cycle(
                 )
             log("决策", f"决策已保存: {saved_path}")
         if print_decision:
-            title = "DeepSeek 交易决策 JSON" if use_ai else "规则引擎交易决策 JSON"
+            title_map = {
+                "deepseek": "DeepSeek 交易决策 JSON",
+                "rules": "规则引擎交易决策 JSON",
+                "rules_fallback": "规则引擎交易决策 JSON（DeepSeek 降级）",
+            }
+            title = title_map.get(decision_source, "交易决策 JSON")
             print(f"\n===== {title} =====")
             print(json.dumps(decision, ensure_ascii=False, indent=2))
             print(

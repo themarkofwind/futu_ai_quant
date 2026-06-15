@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from futu import OrderType, RET_OK, TrdEnv, TrdMarket, TrdSide
+from futu import RET_OK, OrderType, TrdEnv, TrdMarket, TrdSide
 
 from futu_ai_quant.utils.logging import log
 

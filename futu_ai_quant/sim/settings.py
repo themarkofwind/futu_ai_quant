@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-
 SIM_DATA_DIR = Path(os.getenv("SIM_DATA_DIR", "data/sim"))
 PORTFOLIO_FILE = SIM_DATA_DIR / "portfolio.json"
 TRADES_FILE = SIM_DATA_DIR / "trades.jsonl"
