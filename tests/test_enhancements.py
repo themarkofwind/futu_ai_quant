@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from futu_ai_quant.analysis.analysts import attach_analyst_signals, build_stock_analyst_signals
 from futu_ai_quant.backtest.signals import run_signal_backtest_on_frame
-from futu_ai_quant.indicators.ensemble import compute_technical_ensemble, weighted_signal_combination
+from futu_ai_quant.indicators.ensemble import (
+    compute_technical_ensemble,
+    weighted_signal_combination,
+)
 from futu_ai_quant.indicators.technical import compute_indicators_from_frame
 from futu_ai_quant.risk.position_limits import (
     adjust_swing_max_pct,

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
-from futu import KLType, OpenQuoteContext, RET_OK
+from futu import RET_OK, KLType, OpenQuoteContext
 
 from futu_ai_quant.config.settings import KLINE_COUNT
 from futu_ai_quant.indicators.kline_cache import fetch_history_kline_cached

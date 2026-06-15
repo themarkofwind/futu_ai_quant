@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -10,7 +9,6 @@ import pytest
 
 from futu_ai_quant.history.trades import (
     _build_underlying_index,
-    _get_underlying_index,
     _load_underlying_index_cache,
     _save_ytd_trade_cache,
     attach_trade_history_to_stocks,

@@ -15,7 +15,12 @@ from futu_ai_quant.analysis.portfolio import collect_required_codes
 from futu_ai_quant.analysis.slim import slim_portfolio_for_ai
 from futu_ai_quant.config.prompts import SYSTEM_PROMPT
 from futu_ai_quant.decision.validation import find_missing_recommendation_codes
-from futu_ai_quant.llm.settings import llm_max_tokens, llm_provider, llm_temperature, resolve_llm_model
+from futu_ai_quant.llm.settings import (
+    llm_max_tokens,
+    llm_provider,
+    llm_temperature,
+    resolve_llm_model,
+)
 from futu_ai_quant.utils.logging import log
 
 
