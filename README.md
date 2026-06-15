@@ -2,6 +2,8 @@
 
 港股持仓量化分析与模拟交易系统。连接本地 [Futu OpenD](https://openapi.futunn.com/) 拉取真实持仓与行情，计算多周期技术指标与期权 Greeks，调用 DeepSeek 生成结构化交易建议，并可通过 `sim_trader.py` 在本地（或 Futu 模拟盘）跟踪策略效果。
 
+**开发指南（入口、执行流程、API 说明）：** [docs/GUIDE.md](docs/GUIDE.md)
+
 ## 功能概览
 
 ### `main.py` — 量化分析与 AI 建议
@@ -16,7 +18,7 @@
 5. **期权扫描**：14–45 天到期、Delta 0.10–0.30 的卖 Call / 卖 Put 候选，含 IV Rank
 6. **交易计划**：整手股数校验、备兑张数限制、触发价区间
 7. **DeepSeek**：输出覆盖全部持仓的 JSON 建议，缺失自动重试
-8. **决策持久化**：保存至 `data/decisions/`
+8. **持久化**：输入保存至 `data/payloads/`，决策保存至 `data/decisions/`
 
 ### `sim_trader.py` — 模拟交易与绩效跟踪
 
@@ -41,18 +43,136 @@
 
 ```
 futu_ai_quant/
-├── main.py              # 主分析脚本
-├── sim_trader.py        # 模拟交易脚本
-├── .env                 # 环境变量（勿提交）
-├── data/
-│   ├── decisions/       # AI 决策 JSON（含 latest.json）
-│   └── sim/             # 模拟账户、成交、绩效
-│       ├── portfolio.json
-│       ├── trades.jsonl
-│       ├── snapshots.jsonl
-│       └── metrics.json
-└── README.md
+├── futu_ai_quant/           # 主包（按层级拆分）
+│   ├── config/              # 环境配置与 AI Prompt
+│   ├── utils/               # 日志、数值工具
+│   ├── market/              # 港股时段、整手、费用
+│   ├── domain/              # 持仓分类与领域模型
+│   ├── strategy/            # 分层策略与波段信号
+│   ├── indicators/          # 技术指标、IV Rank
+│   ├── brokers/futu/        # Futu OpenD 接口封装
+│   ├── planning/            # 正股/期权交易计划
+│   ├── history/             # 当年成交缓存
+│   ├── analysis/            # 正股分析与组合构建
+│   ├── decision/            # 规则/AI 决策与校验
+│   ├── pipeline/            # 分析主流程编排
+│   ├── sim/                 # 本地模拟交易引擎
+│   └── cli/                 # 命令行入口
+├── tests/                   # 回归测试（pytest）
+├── main.py                  # 兼容入口（分析）
+├── sim_trader.py            # 兼容入口（模拟）
+├── pyproject.toml
+├── requirements.txt
+├── requirements-dev.txt
+├── .env                     # 环境变量（勿提交）
+└── data/                    # 本地运行数据（gitignore，见下方说明）
 ```
+
+## data/ 目录说明
+
+`data/` 在 `.gitignore` 中，**不会提交到 Git**；首次运行 `main.py` / `sim_trader.py` 后自动创建。不同机器、不同账户各自独立，便于本地 review 与回溯。
+
+### 目录总览
+
+| 子目录 / 文件 | 产生者 | 用途 |
+|---------------|--------|------|
+| `payloads/` | `main.py` | **模型输入**：发给 DeepSeek / 规则引擎的完整 `portfolio_payload` |
+| `decisions/` | `main.py` | **模型输出**：AI / 规则引擎生成的交易建议 |
+| `trade_history/` | `main.py` | 当年实盘成交**原始缓存**（从 Futu 增量拉取） |
+| `iv_history/` | `main.py` | 各正股 IV 扫描历史（用于计算 IV Rank） |
+| `sim/` | `sim_trader.py` | 本地模拟账户、成交、净值快照 |
+
+### `payloads/` — 模型输入（便于 review）
+
+| 文件 | 说明 |
+|------|------|
+| `payload_YYYYMMDD_HHMMSS.json` | 单次分析快照，与当次 `decision_*.json` **同一时间戳** |
+| `latest_payload.json` | 最近一次分析的输入（固定文件名，方便直接打开） |
+
+文件结构要点：
+
+- 顶层 `portfolio_payload`：实际送入大模型的 JSON
+- `portfolio_payload.stocks[]`：每只正股的盈亏、日K/周K 指标、交易计划、卖权候选等
+- `portfolio_payload.stocks[].trade_history`：**按正股聚合的历史成交摘要**（非原始流水）
+  - `ytd_summary`：当年买卖笔数、量、均价
+  - `recent_swing_window`：近 14 日（默认）正股/关联期权成交明细
+  - `swing_hint`：规则生成的波段节奏提示
+- `portfolio_payload.options[]`：期权持仓的 Greeks 等（有期权持仓时）
+
+环境变量：`PAYLOADS_DIR`（默认 `data/payloads`）
+
+### `decisions/` — 模型输出
+
+| 文件 | 说明 |
+|------|------|
+| `decision_YYYYMMDD_HHMMSS.json` | 单次决策快照 |
+| `latest.json` | 最近一次决策；`sim_trader.py --source latest` 读取此文件 |
+
+文件结构要点：
+
+- `decision`：核心内容，`recommendations[]` 为各标的的 `action`、`reasoning`、`stock_trade_plan`、`option_trade_plan`
+- `payload_path`：指向同轮 `payloads/payload_*.json`，便于输入输出对照
+- `analysis_id`：与 payload 文件名中的时间戳一致
+- `payload_summary`：组合市值、持仓数量等摘要
+
+环境变量：`DECISIONS_DIR`（默认 `data/decisions`）
+
+### `trade_history/` — 成交原始缓存
+
+| 文件 | 说明 |
+|------|------|
+| `deals_ytd_YYYY.json` | 当年全部成交明细（`deals[]`），含 `deal_id`、代码、买卖方向、价格、时间等 |
+
+- 优先读本地缓存，过期后从 Futu `history_deal_list_query` 增量刷新
+- 分析时按正股汇总后写入 `payload` 的 `trade_history` 字段，**原始文件与 payload 内摘要并存**
+
+环境变量：`TRADE_HISTORY_DIR`、`TRADE_HISTORY_CACHE_HOURS`、`TRADE_RECENT_SWING_DAYS`
+
+### `iv_history/` — IV Rank 历史
+
+| 文件 | 说明 |
+|------|------|
+| `HK_09988.json` 等 | 每次卖权扫描记录的代表性 IV 样本（`iv_samples[]`） |
+
+- 累计足够次数（默认 ≥10）后计算历史 IV Rank
+- 仅影响卖权候选的 `iv_rank` 标注，与模拟账户无关
+
+环境变量：`IV_HISTORY_DIR`、`IV_HISTORY_MIN_SAMPLES`
+
+### `sim/` — 模拟交易数据
+
+| 文件 | 说明 |
+|------|------|
+| `portfolio.json` | 模拟账户：现金、正股/期权持仓、挂单队列 |
+| `trades.jsonl` | 模拟成交流水（每行一笔 JSON） |
+| `snapshots.jsonl` | 每轮模拟后的净值快照（每行一笔） |
+| `metrics.json` | 累计绩效摘要；`sim_trader.py --report` 读取此文件 |
+
+环境变量：`SIM_DATA_DIR`（默认 `data/sim`）
+
+### 数据流向（简图）
+
+```
+Futu OpenD 持仓/行情/成交
+        ↓
+main.py 分析
+        ├─→ trade_history/deals_ytd_*.json   （原始成交缓存）
+        ├─→ iv_history/HK_*.json             （IV 样本）
+        ├─→ payloads/payload_*.json          （模型输入，含 trade_history 摘要）
+        └─→ decisions/decision_*.json        （模型输出，含 payload_path）
+                ↓
+sim_trader.py --source latest
+        └─→ sim/portfolio.json、trades.jsonl、snapshots.jsonl、metrics.json
+```
+
+### 运行测试
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+新功能开发后建议先跑测试再提交，覆盖策略信号、整手校验、决策 schema、模拟撮合等核心逻辑。
 
 ## 环境依赖
 
@@ -100,7 +220,7 @@ cp .env.example .env
 # 编辑 .env，填入 DEEPSEEK_API_KEY 等
 ```
 
-`.env` 示例见仓库内 [`.env.example`](.env.example)。`data/` 目录（决策 JSON、模拟账户、成交记录）已在 `.gitignore` 中忽略，每位使用者会在本地自动生成，互不干扰。
+`.env` 示例见仓库内 [`.env.example`](.env.example)。`data/` 目录已在 `.gitignore` 中忽略，每位使用者本地自动生成；各子目录含义见上文 **[data/ 目录说明](#data-目录说明)**。
 
 ## 快速开始
 
@@ -113,7 +233,9 @@ cp .env.example .env
 ```bash
 conda activate futu
 cd futu_ai_quant
+pip install -e ".[dev]"   # 可选：以可编辑模式安装包
 PYTHONUNBUFFERED=1 python -u main.py --once
+# 或：python -m futu_ai_quant --once
 ```
 
 ### 3. 常驻运行
@@ -144,6 +266,8 @@ python sim_trader.py --backend futu --source latest --once
 ```
 
 ## 输出说明
+
+分析产生的 JSON 文件说明见 **[data/ 目录说明](#data-目录说明)**。以下为日志与字段速览。
 
 ### 分析日志示例
 

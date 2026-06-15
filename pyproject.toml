@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "futu-ai-quant"
+version = "0.2.0"
+description = "港股持仓量化分析与模拟交易"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "futu-api",
+    "pandas",
+    "pandas-ta",
+    "openai",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+futu-analyze = "futu_ai_quant.cli.analyze:main"
+futu-sim = "futu_ai_quant.cli.sim:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["futu_ai_quant*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
