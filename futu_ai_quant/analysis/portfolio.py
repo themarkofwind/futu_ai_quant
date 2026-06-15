@@ -103,6 +103,9 @@ def build_portfolio_risk_overlay(stocks: list[dict[str, Any]]) -> dict[str, Any]
 def build_portfolio_payload(
     stocks: list[dict[str, Any]],
     options: list[dict[str, Any]],
+    *,
+    dynamic_risk: dict[str, Any] | None = None,
+    analyst_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     required_positions = [
         {
@@ -125,7 +128,7 @@ def build_portfolio_payload(
         for item in options
     ]
 
-    return {
+    payload: dict[str, Any] = {
         "as_of": time.strftime("%Y-%m-%d %H:%M:%S"),
         "market": "HK",
         "stocks": stocks,
@@ -140,6 +143,11 @@ def build_portfolio_payload(
             "total_option_market_val": sum(o.get("market_val") or 0 for o in options),
         },
     }
+    if dynamic_risk is not None:
+        payload["portfolio_risk"]["dynamic_risk"] = dynamic_risk
+    if analyst_summary is not None:
+        payload["virtual_analysts"] = analyst_summary
+    return payload
 
 
 def collect_required_codes(portfolio_payload: dict[str, Any]) -> list[str]:

@@ -21,6 +21,10 @@
 - ``TRADE_HISTORY_DIR``：当年成交缓存
 - ``KLINE_CACHE_*``：K 线缓存（默认关闭，可选开启）
 
+LLM（见 ``llm/settings.py``）
+------------------------------
+- ``LLM_PROVIDER`` / ``LLM_MODEL`` / ``DEEPSEEK_API_KEY`` 等
+
 完整列表见 ``.env.example`` 与 ``docs/GUIDE.md``。
 """
 
@@ -80,5 +84,9 @@ DECISIONS_DIR = Path(os.getenv("DECISIONS_DIR", "data/decisions"))
 PAYLOADS_DIR = Path(os.getenv("PAYLOADS_DIR", "data/payloads"))
 TRADE_HISTORY_DIR = Path(os.getenv("TRADE_HISTORY_DIR", "data/trade_history"))
 TRADE_HISTORY_CACHE_HOURS = int(os.getenv("TRADE_HISTORY_CACHE_HOURS", "12"))
-TRADE_RECENT_SWING_DAYS = int(os.getenv("TRADE_RECENT_SWING_DAYS", "14"))
+TRADE_RECENT_STOCK_COUNT = int(os.getenv("TRADE_RECENT_STOCK_COUNT", os.getenv("TRADE_RECENT_TRADE_COUNT", "5")))
+TRADE_RECENT_OPTION_COUNT = int(os.getenv("TRADE_RECENT_OPTION_COUNT", os.getenv("TRADE_RECENT_TRADE_COUNT", "5")))
+STOCK_NAMES_DIR = Path(os.getenv("STOCK_NAMES_DIR", "data/stock_names"))
+STOCK_NAMES_CACHE_HOURS = int(os.getenv("STOCK_NAMES_CACHE_HOURS", "168"))
+STOCK_NAME_ZH_ENRICH = os.getenv("STOCK_NAME_ZH_ENRICH", "1").lower() not in ("0", "false", "no")
 FUTU_HISTORY_QUERY_DAYS = 90

@@ -7,6 +7,7 @@ from typing import Any
 
 from futu_ai_quant.config.settings import DECISIONS_DIR
 from futu_ai_quant.sim.jsonl import append_jsonl
+from futu_ai_quant.sim.metrics import compute_metrics_from_snapshots
 from futu_ai_quant.sim.portfolio import PaperPortfolio
 from futu_ai_quant.sim.settings import METRICS_FILE, SNAPSHOTS_FILE
 from futu_ai_quant.utils.files import atomic_write_text
@@ -44,6 +45,7 @@ def save_snapshot(
         **mtm,
     }
     append_jsonl(SNAPSHOTS_FILE, snapshot)
+    risk_metrics = compute_metrics_from_snapshots()
     metrics = {
         "updated_at": snapshot["timestamp"],
         "latest_nav": mtm["total_nav"],
@@ -54,6 +56,7 @@ def save_snapshot(
         "total_trades": portfolio.data["stats"]["total_trades"],
         "pending_orders": mtm["pending_orders"],
         "last_decision_id": decision_id,
+        **risk_metrics,
     }
     atomic_write_text(
         METRICS_FILE,
@@ -78,4 +81,13 @@ def print_report() -> None:
                 f"\n净值：{first['total_nav']:.2f} -> {last['total_nav']:.2f} "
                 f"（{nav_change:+.2f}） 快照数={len(lines)}"
             )
+            sharpe = metrics.get("sharpe_ratio")
+            max_dd = metrics.get("max_drawdown_pct")
+            if sharpe is not None or max_dd is not None:
+                parts = []
+                if sharpe is not None:
+                    parts.append(f"Sharpe={sharpe}")
+                if max_dd is not None:
+                    parts.append(f"最大回撤={max_dd}%")
+                print("风险指标：" + "，".join(parts))
     print()

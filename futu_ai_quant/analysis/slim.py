@@ -55,6 +55,7 @@ _TIMEFRAME_KEEP = frozenset(
         "volume_ratio",
         "atr",
         "rsi",
+        "technical_ensemble",
         "error",
     }
 )
@@ -88,7 +89,6 @@ _EXISTING_OPTION_KEEP = frozenset(
 _OPTION_POSITION_KEEP = frozenset(
     {
         "code",
-        "name",
         "position_direction",
         "position_side",
         "qty",
@@ -156,6 +156,24 @@ def _slim_pnl(pnl: dict[str, Any] | None) -> dict[str, Any] | None:
     return slim or None
 
 
+def _slim_analyst_signals(signals: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not signals:
+        return None
+    return {
+        "consensus": signals.get("consensus"),
+        "consensus_score": signals.get("consensus_score"),
+        "analysts": [
+            {
+                "analyst": item.get("analyst"),
+                "signal": item.get("signal"),
+                "confidence": item.get("confidence"),
+                "reasoning": item.get("reasoning"),
+            }
+            for item in (signals.get("analysts") or [])
+        ],
+    }
+
+
 def _slim_stock_trade_plan(plan: dict[str, Any] | None) -> dict[str, Any] | None:
     if not plan:
         return None
@@ -212,14 +230,18 @@ def _slim_trade_history(history: dict[str, Any] | None) -> dict[str, Any] | None
         if key in ytd and ytd[key] is not None
     }
     return {
-        "recent_swing_days": history.get("recent_swing_days"),
+        "recent_stock_trade_limit": history.get("recent_stock_trade_limit"),
+        "recent_option_trade_limit": history.get("recent_option_trade_limit"),
         "ytd_summary": slim_ytd,
         "ytd_option_trade_count": history.get("ytd_option_trade_count"),
         "recent_swing_window": {
+            "stock_trade_limit": recent.get("stock_trade_limit"),
+            "option_trade_limit": recent.get("option_trade_limit"),
             "stock_trades": recent.get("stock_trades") or [],
             "option_trades": recent.get("option_trades") or [],
             "stock_trade_count": recent.get("stock_trade_count", 0),
             "option_trade_count": recent.get("option_trade_count", 0),
+            "ytd_stock_trade_count": recent.get("ytd_stock_trade_count"),
         },
         "swing_hint": history.get("swing_hint"),
     }
@@ -233,11 +255,30 @@ def _slim_existing_option(option: dict[str, Any]) -> dict[str, Any]:
     return slim
 
 
+def _slim_required_positions(positions: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """发给 LLM 的持仓清单不含股票名称，避免模型臆造中文名。"""
+    slimmed: list[dict[str, Any]] = []
+    for item in positions or []:
+        if not isinstance(item, dict) or not item.get("code"):
+            continue
+        entry = {
+            "code": item.get("code"),
+            "asset_type": item.get("asset_type"),
+        }
+        if item.get("loss_tier") is not None:
+            entry["loss_tier"] = item.get("loss_tier")
+        if item.get("lot_size") is not None:
+            entry["lot_size"] = item.get("lot_size")
+        if item.get("position_direction"):
+            entry["position_direction"] = item.get("position_direction")
+        slimmed.append(entry)
+    return slimmed
+
+
 def slim_stock_for_ai(stock: dict[str, Any]) -> dict[str, Any]:
     option_plan = stock.get("option_trade_plan")
     slim: dict[str, Any] = {
         "code": stock.get("code"),
-        "name": stock.get("name"),
         "position_direction": stock.get("position_direction"),
         "lot_size": stock.get("lot_size"),
         "shares_per_lot": stock.get("shares_per_lot"),
@@ -246,6 +287,7 @@ def slim_stock_for_ai(stock: dict[str, Any]) -> dict[str, Any]:
         "daily": _slim_timeframe(stock.get("daily")),
         "weekly": _slim_timeframe(stock.get("weekly")),
         "combined_swing_signal": stock.get("combined_swing_signal"),
+        "analyst_signals": _slim_analyst_signals(stock.get("analyst_signals")),
         "stock_trade_plan": _slim_stock_trade_plan(stock.get("stock_trade_plan")),
         "option_trade_plan": _slim_option_trade_plan(option_plan),
         "option_overlay": _slim_option_overlay(stock.get("option_overlay"), option_plan),
@@ -274,19 +316,42 @@ def slim_option_for_ai(option: dict[str, Any]) -> dict[str, Any]:
     return slim
 
 
+def _slim_dynamic_risk(dynamic: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not dynamic:
+        return None
+    per_stock = []
+    for item in dynamic.get("per_stock") or []:
+        per_stock.append(
+            {
+                "code": item.get("code"),
+                "tier_max_swing_pct": item.get("tier_max_swing_pct"),
+                "adjusted_max_swing_pct": item.get("adjusted_max_swing_pct"),
+                "avg_correlation_with_peers": item.get("avg_correlation_with_peers"),
+            }
+        )
+    return {
+        "correlation_matrix_available": dynamic.get("correlation_matrix_available"),
+        "per_stock": per_stock,
+    }
+
+
 def slim_portfolio_for_ai(portfolio_payload: dict[str, Any]) -> dict[str, Any]:
     """生成发给 DeepSeek 的精简 portfolio；全量 payload 仍写入 ``data/payloads``。"""
     risk = portfolio_payload.get("portfolio_risk") or {}
     return {
         "as_of": portfolio_payload.get("as_of"),
         "market": portfolio_payload.get("market"),
-        "required_positions": portfolio_payload.get("required_positions"),
+        "required_positions": _slim_required_positions(
+            portfolio_payload.get("required_positions")
+        ),
         "summary": portfolio_payload.get("summary"),
         "portfolio_risk": {
             "total_stock_market_val": risk.get("total_stock_market_val"),
             "max_single_weight_pct": risk.get("max_single_weight_pct"),
             "concentration_alerts": risk.get("concentration_alerts") or [],
+            "dynamic_risk": _slim_dynamic_risk(risk.get("dynamic_risk")),
         },
+        "virtual_analysts": portfolio_payload.get("virtual_analysts"),
         "stocks": [slim_stock_for_ai(stock) for stock in portfolio_payload.get("stocks", [])],
         "options": [slim_option_for_ai(opt) for opt in portfolio_payload.get("options", [])],
     }

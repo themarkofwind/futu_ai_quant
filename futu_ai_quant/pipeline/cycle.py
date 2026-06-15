@@ -18,22 +18,26 @@ from typing import Any
 from futu import RET_OK, OpenQuoteContext, OpenSecTradeContext
 from openai import OpenAI
 
+from futu_ai_quant.analysis.analysts import attach_analyst_signals
 from futu_ai_quant.analysis.portfolio import (
     attach_stock_option_context,
     build_portfolio_payload,
     collect_required_codes,
 )
-from futu_ai_quant.analysis.stock import compute_stock_indicators
+from futu_ai_quant.analysis.stock import compute_stock_indicators, rebuild_stock_trade_plans
 from futu_ai_quant.brokers.futu.options import fetch_option_metrics
 from futu_ai_quant.brokers.futu.positions import get_position_list
 from futu_ai_quant.brokers.futu.quotes import fetch_snapshot_map
-from futu_ai_quant.config.settings import TRADE_RECENT_SWING_DAYS
-from futu_ai_quant.decision.ai import call_deepseek
+from futu_ai_quant.decision.ai import call_llm_decision
+from futu_ai_quant.decision.display import enrich_decision_for_display, format_decision_summary
 from futu_ai_quant.decision.rules import build_rules_decision
 from futu_ai_quant.decision.storage import save_analysis_artifacts
 from futu_ai_quant.decision.validation import validate_decision_schema
 from futu_ai_quant.domain.positions import classify_positions
 from futu_ai_quant.history.trades import attach_trade_history_to_stocks, load_ytd_trade_history
+from futu_ai_quant.llm.settings import llm_provider
+from futu_ai_quant.market.symbol_names import resolve_symbol_names
+from futu_ai_quant.risk.position_limits import attach_portfolio_risk_limits
 from futu_ai_quant.utils.logging import log
 
 
@@ -49,20 +53,20 @@ def _resolve_decision(
 ) -> tuple[dict[str, Any], str]:
     """生成并校验决策；AI 失败时自动降级为规则引擎。"""
     if not use_ai:
-        log("规则", f"跳过 DeepSeek，使用规则引擎生成 {len(required_codes)} 条建议...")
+        log("规则", f"跳过 LLM，使用规则引擎生成 {len(required_codes)} 条建议...")
         decision = build_rules_decision(stocks, options)
         return validate_decision_schema(decision, required_codes, stocks_by_code), "rules"
 
     if ai_client is None:
-        raise RuntimeError("use_ai=True 但未提供 DeepSeek 客户端")
+        raise RuntimeError("use_ai=True 但未提供 LLM 客户端")
 
-    log("模型", f"开始调用 DeepSeek，需为 {len(required_codes)} 个持仓逐一生成建议...")
+    log("模型", f"开始调用 LLM，需为 {len(required_codes)} 个持仓逐一生成建议...")
     try:
-        decision = call_deepseek(ai_client, payload)
+        decision = call_llm_decision(ai_client, payload)
         decision = validate_decision_schema(decision, required_codes, stocks_by_code)
-        return decision, "deepseek"
+        return decision, llm_provider()
     except Exception as exc:
-        log("模型", f"DeepSeek 决策失败，降级规则引擎: {exc}")
+        log("模型", f"LLM 决策失败，降级规则引擎: {exc}")
         decision = build_rules_decision(stocks, options)
         decision = validate_decision_schema(decision, required_codes, stocks_by_code)
         return decision, "rules_fallback"
@@ -182,6 +186,16 @@ def run_analysis_cycle(
         if opt_plan:
             log("仓位", f"{stock['code']} 期权方案: {opt_plan.get('label')}")
 
+    log("风控", "计算波动率与相关性动态仓位上限...")
+    dynamic_risk = attach_portfolio_risk_limits(stocks)
+    rebuild_stock_trade_plans(stocks, snapshot_map)
+    for stock in stocks:
+        limits = stock.get("risk_limits") or {}
+        tier = limits.get("tier_max_swing_pct")
+        adj = limits.get("adjusted_max_swing_pct")
+        if tier is not None and adj is not None and adj < tier:
+            log("风控", f"{stock['code']} 波段上限 {tier}% → {adj}%（波动/相关性调整）")
+
     attach_trade_history_to_stocks(stocks, ytd_deals)
     for stock in stocks:
         hist = stock.get("trade_history") or {}
@@ -191,8 +205,7 @@ def run_analysis_cycle(
             log(
                 "成交",
                 f"{stock['code']} 当年正股{ytd.get('trade_count', 0)}笔 "
-                f"近{hist.get('recent_swing_days', TRADE_RECENT_SWING_DAYS)}日"
-                f"正股{recent.get('stock_trade_count', 0)}笔/期权{recent.get('option_trade_count', 0)}笔"
+                f"最近成交正股{recent.get('stock_trade_count', 0)}笔/期权{recent.get('option_trade_count', 0)}笔"
                 + (f" | {hist.get('swing_hint')}" if hist.get("swing_hint") else ""),
             )
 
@@ -210,9 +223,32 @@ def run_analysis_cycle(
             )
 
     attach_stock_option_context(stocks, options)
-    payload = build_portfolio_payload(stocks, options)
+    log("分析师", "生成规则化虚拟分析师信号...")
+    analyst_summary = attach_analyst_signals(stocks)
+    payload = build_portfolio_payload(
+        stocks,
+        options,
+        dynamic_risk=dynamic_risk,
+        analyst_summary=analyst_summary,
+    )
     required_codes = collect_required_codes(payload)
     stocks_by_code = {s["code"]: s for s in stocks}
+    options_by_code = {o["code"]: o for o in options}
+    position_name_hints = {
+        str(s["code"]): str(s.get("name") or "")
+        for s in stocks_raw
+        if s.get("code")
+    }
+    for opt in options_raw:
+        if opt.get("code"):
+            position_name_hints[str(opt["code"])] = str(opt.get("name") or "")
+
+    log("名称", "加载股票中英文名称缓存...")
+    symbol_names = resolve_symbol_names(
+        quote_ctx,
+        required_codes,
+        position_names=position_name_hints,
+    )
 
     if save_payload and not save_decision:
         from futu_ai_quant.decision.storage import save_portfolio_payload_record
@@ -236,6 +272,12 @@ def run_analysis_cycle(
             required_codes=required_codes,
             stocks_by_code=stocks_by_code,
         )
+        decision = enrich_decision_for_display(
+            decision,
+            stocks_by_code=stocks_by_code,
+            options_by_code=options_by_code,
+            symbol_names=symbol_names,
+        )
         saved_path: Path | None = None
         if save_decision:
             if save_payload:
@@ -258,15 +300,14 @@ def run_analysis_cycle(
             log("决策", f"决策已保存: {saved_path}")
         if print_decision:
             title_map = {
-                "deepseek": "DeepSeek 交易决策 JSON",
-                "rules": "规则引擎交易决策 JSON",
-                "rules_fallback": "规则引擎交易决策 JSON（DeepSeek 降级）",
+                "rules": "规则引擎交易决策",
+                "rules_fallback": "规则引擎交易决策（LLM 降级）",
             }
-            title = title_map.get(decision_source, "交易决策 JSON")
+            title = title_map.get(decision_source, f"{decision_source.upper()} 交易决策")
             print(f"\n===== {title} =====")
-            print(json.dumps(decision, ensure_ascii=False, indent=2))
+            print(format_decision_summary(decision))
             print(
-                f"===== 建议覆盖 {len(decision['recommendations'])}/{len(required_codes)} 个持仓 =====\n"
+                f"\n===== 建议覆盖 {len(decision['recommendations'])}/{len(required_codes)} 个持仓 =====\n"
             )
         return {
             "decision": decision,

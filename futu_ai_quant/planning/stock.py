@@ -57,6 +57,9 @@ def build_stock_trade_plan(
     can_sell = safe_float(stock.get("can_sell_qty")) or qty
     lot_size = resolve_lot_size(snapshot, stock)
     max_pct = float(swing_strategy.get("max_swing_position_pct") or 10)
+    risk_limits = stock.get("risk_limits") or {}
+    if risk_limits.get("adjusted_max_swing_pct") is not None:
+        max_pct = float(risk_limits["adjusted_max_swing_pct"])
     market_price = safe_float(pnl.get("market_price"))
     signal = combined_signal.get("effective_signal", combined_signal.get("primary_signal", "HOLD"))
 
@@ -68,6 +71,7 @@ def build_stock_trade_plan(
         "current_lots": int(qty // lot_size) if lot_size else 0,
         "can_sell_lots": int(can_sell // lot_size) if lot_size else 0,
         "max_swing_position_pct": max_pct,
+        "tier_max_swing_pct": risk_limits.get("tier_max_swing_pct"),
         "direction": "none",
         "suggested_qty": 0,
         "suggested_lots": 0,

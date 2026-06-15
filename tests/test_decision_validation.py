@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from futu_ai_quant.decision.display import build_technical_summary, enrich_decision_for_display
 from futu_ai_quant.decision.validation import (
     find_missing_recommendation_codes,
     validate_decision_schema,
@@ -12,7 +13,6 @@ from futu_ai_quant.planning.stock import empty_stock_trade_plan
 def _sample_recommendation(code: str, *, qty: int = 0, lot_size: int = 100) -> dict:
     return {
         "code": code,
-        "name": "测试",
         "action": "HOLD",
         "confidence": 0.8,
         "reasoning": "测试",
@@ -67,3 +67,49 @@ class TestDecisionValidation:
         }
         with pytest.raises(ValueError, match="未覆盖"):
             validate_decision_schema(decision, ["HK.00700", "HK.09988"])
+
+
+class TestDecisionDisplay:
+    def test_build_technical_summary_includes_signals(self) -> None:
+        stock = {
+            "swing_strategy": {"loss_tier": "profitable"},
+            "combined_swing_signal": {"effective_signal": "HOLD"},
+            "pnl": {"pl_ratio": 10.5, "market_price": 100.0},
+            "daily": {
+                "swing_signal": "HOLD",
+                "rsi": 65.5,
+                "macd_bias": "bullish",
+                "volume_ratio": 1.2,
+            },
+            "weekly": {"swing_signal": "HOLD", "rsi": 55.0, "macd_bias": "neutral"},
+        }
+        summary = build_technical_summary(stock)
+        assert "profitable" in summary
+        assert "日K HOLD" in summary
+        assert "RSI=65.50" in summary
+
+    def test_enrich_decision_prefers_chinese_name(self) -> None:
+        decision = {
+            "portfolio_risk_summary": "ok",
+            "recommendations": [_sample_recommendation("HK.06675")],
+        }
+        enriched = enrich_decision_for_display(
+            decision,
+            stocks_by_code={
+                "HK.06675": {
+                    "swing_strategy": {"loss_tier": "profitable"},
+                    "combined_swing_signal": {"effective_signal": "WAIT"},
+                    "daily": {"swing_signal": "WAIT"},
+                    "weekly": {"swing_signal": "WAIT"},
+                    "pnl": {"pl_ratio": 0.0},
+                }
+            },
+            options_by_code={},
+            symbol_names={
+                "HK.06675": {"name_zh": "琻捷电子", "name_en": "SENASIC"},
+            },
+        )
+        rec = enriched["recommendations"][0]
+        assert rec["display_name"] == "琻捷电子"
+        assert rec["name"] == "琻捷电子"
+        assert rec["technical_summary"]

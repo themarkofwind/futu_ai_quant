@@ -12,12 +12,26 @@ from futu_ai_quant.config.settings import (
     FUTU_HISTORY_QUERY_DAYS,
     TRADE_HISTORY_CACHE_HOURS,
     TRADE_HISTORY_DIR,
-    TRADE_RECENT_SWING_DAYS,
+    TRADE_RECENT_OPTION_COUNT,
+    TRADE_RECENT_STOCK_COUNT,
 )
 from futu_ai_quant.domain.positions import is_option_code, resolve_option_underlying_code
 from futu_ai_quant.utils.files import atomic_write_text
 from futu_ai_quant.utils.logging import log
 from futu_ai_quant.utils.numbers import safe_float
+
+# 进程内缓存：同一轮分析/循环内避免重复读盘与建索引
+_MEMORY_DEALS: list[dict[str, Any]] | None = None
+_MEMORY_FINGERPRINT: str | None = None
+_MEMORY_INDEX: dict[str, dict[str, list[dict[str, Any]]]] | None = None
+
+
+def clear_trade_history_memory_cache() -> None:
+    """测试或强制刷新时清空进程内成交缓存。"""
+    global _MEMORY_DEALS, _MEMORY_FINGERPRINT, _MEMORY_INDEX
+    _MEMORY_DEALS = None
+    _MEMORY_FINGERPRINT = None
+    _MEMORY_INDEX = None
 
 
 def _parse_deal_time(value: str | None) -> datetime | None:
@@ -34,6 +48,10 @@ def _parse_deal_time(value: str | None) -> datetime | None:
 
 def _ytd_trade_cache_path(year: int) -> Path:
     return TRADE_HISTORY_DIR / f"deals_ytd_{year}.json"
+
+
+def _underlying_index_cache_path(year: int) -> Path:
+    return TRADE_HISTORY_DIR / f"deals_index_{year}.json"
 
 
 def _normalize_trd_side(value: Any) -> str:
@@ -73,6 +91,15 @@ def _load_ytd_trade_cache(year: int) -> dict[str, Any] | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def _cache_fingerprint(cache: dict[str, Any]) -> str:
+    return f"{cache.get('year')}|{cache.get('updated_at')}|{cache.get('deal_count')}"
+
+
+def _deals_fingerprint(deals: list[dict[str, Any]], year: int) -> str:
+    latest = max((str(d.get("create_time") or "") for d in deals), default="")
+    return f"{year}|{len(deals)}|{latest}"
 
 
 def _cache_is_fresh(cache: dict[str, Any]) -> bool:
@@ -137,7 +164,80 @@ def _save_ytd_trade_cache(year: int, deals: list[dict[str, Any]], *, source: str
         "deals": deals,
     }
     atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
+    _save_underlying_index_cache(year, deals, cache_payload=payload)
     return path
+
+
+def _sort_deals_desc(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(records, key=lambda item: item.get("create_time", ""), reverse=True)
+
+
+def _build_underlying_index(deals: list[dict[str, Any]], year: int) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """按标的聚合当年成交，正股/期权分开排序。"""
+    year_prefix = str(year)
+    index: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for deal in deals:
+        if not str(deal.get("create_time", "")).startswith(year_prefix):
+            continue
+        underlying = deal.get("underlying_code")
+        if not underlying:
+            continue
+        bucket = index.setdefault(
+            str(underlying),
+            {"stock": [], "option": []},
+        )
+        key = "stock" if deal.get("asset_type") == "stock" else "option"
+        bucket[key].append(deal)
+
+    for bucket in index.values():
+        bucket["stock"] = _sort_deals_desc(bucket["stock"])
+        bucket["option"] = _sort_deals_desc(bucket["option"])
+    return index
+
+
+def _load_underlying_index_cache(year: int, fingerprint: str) -> dict[str, dict[str, list[dict[str, Any]]]] | None:
+    path = _underlying_index_cache_path(year)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("fingerprint") == fingerprint:
+            return payload.get("index")
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    return None
+
+
+def _save_underlying_index_cache(
+    year: int,
+    deals: list[dict[str, Any]],
+    *,
+    cache_payload: dict[str, Any],
+) -> None:
+    fingerprint = _cache_fingerprint(cache_payload)
+    index = _build_underlying_index(deals, year)
+    TRADE_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(
+        _underlying_index_cache_path(year),
+        json.dumps(
+            {
+                "year": year,
+                "fingerprint": fingerprint,
+                "built_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "underlying_count": len(index),
+                "index": index,
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+
+def _remember_deals(deals: list[dict[str, Any]], fingerprint: str) -> list[dict[str, Any]]:
+    global _MEMORY_DEALS, _MEMORY_FINGERPRINT, _MEMORY_INDEX
+    _MEMORY_DEALS = deals
+    _MEMORY_FINGERPRINT = fingerprint
+    _MEMORY_INDEX = None
+    return deals
 
 
 def load_ytd_trade_history(
@@ -145,34 +245,96 @@ def load_ytd_trade_history(
     *,
     force_refresh: bool = False,
 ) -> list[dict[str, Any]]:
-    """加载当年成交：优先读本地缓存，过期则增量/全量刷新。"""
+    """
+    加载当年成交：进程内缓存 → 本地 YTD 缓存 → 增量/全量 API。
+
+    缓存未过期时跳过 Futu API；API 失败时回退到过期的本地缓存。
+    """
+    global _MEMORY_DEALS, _MEMORY_FINGERPRINT
+
     year = datetime.now().year
     cache = _load_ytd_trade_cache(year)
-    if cache and not force_refresh and _cache_is_fresh(cache):
-        log("成交", f"使用缓存当年成交 {cache.get('deal_count', 0)} 条（{cache.get('updated_at')}）")
-        return cache.get("deals", [])
+
+    if not force_refresh and cache and _cache_is_fresh(cache):
+        fingerprint = _cache_fingerprint(cache)
+        if _MEMORY_DEALS is not None and _MEMORY_FINGERPRINT == fingerprint:
+            log("成交", f"使用内存缓存当年成交 {len(_MEMORY_DEALS)} 条")
+            return _MEMORY_DEALS
+        deals = cache.get("deals", [])
+        log("成交", f"使用磁盘缓存当年成交 {cache.get('deal_count', 0)} 条（{cache.get('updated_at')}）")
+        return _remember_deals(deals, fingerprint)
 
     existing = (cache or {}).get("deals", [])
     now = datetime.now()
-    if existing and not force_refresh:
-        latest = max(
-            (_parse_deal_time(item.get("create_time")) for item in existing),
-            key=lambda dt: dt or datetime.min,
-        )
-        fetch_start = (latest - timedelta(days=1)) if latest else datetime(year, 1, 1)
-        if fetch_start < datetime(year, 1, 1):
-            fetch_start = datetime(year, 1, 1)
-        incremental = _fetch_history_deals_between(trade_ctx, fetch_start, now)
-        deals = _merge_deal_records(existing, incremental)
-        source = "incremental"
-        log("成交", f"增量刷新成交：新增 {max(0, len(deals) - len(existing))} 条，合计 {len(deals)} 条")
-    else:
-        deals = _fetch_ytd_deals_from_api(trade_ctx, year)
-        source = "full"
-        log("成交", f"全量拉取当年成交 {len(deals)} 条")
+    try:
+        if existing and not force_refresh:
+            latest = max(
+                (_parse_deal_time(item.get("create_time")) for item in existing),
+                key=lambda dt: dt or datetime.min,
+            )
+            fetch_start = (latest - timedelta(days=1)) if latest else datetime(year, 1, 1)
+            if fetch_start < datetime(year, 1, 1):
+                fetch_start = datetime(year, 1, 1)
+            incremental = _fetch_history_deals_between(trade_ctx, fetch_start, now)
+            deals = _merge_deal_records(existing, incremental)
+            source = "incremental"
+            log("成交", f"增量刷新成交：新增 {max(0, len(deals) - len(existing))} 条，合计 {len(deals)} 条")
+        else:
+            deals = _fetch_ytd_deals_from_api(trade_ctx, year)
+            source = "full"
+            log("成交", f"全量拉取当年成交 {len(deals)} 条")
 
-    _save_ytd_trade_cache(year, deals, source=source)
-    return deals
+        saved = _save_ytd_trade_cache(year, deals, source=source)
+        refreshed = _load_ytd_trade_cache(year) or {}
+        fingerprint = _cache_fingerprint(refreshed) if refreshed else _deals_fingerprint(deals, year)
+        log("成交", f"成交缓存已更新: {saved.name}")
+        return _remember_deals(deals, fingerprint)
+    except Exception as exc:
+        if existing:
+            fingerprint = _cache_fingerprint(cache) if cache else _deals_fingerprint(existing, year)
+            log("成交", f"API 刷新失败，回退本地缓存 {len(existing)} 条: {exc}")
+            return _remember_deals(existing, fingerprint)
+        raise
+
+
+def _get_underlying_index(deals: list[dict[str, Any]]) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    global _MEMORY_INDEX, _MEMORY_FINGERPRINT
+
+    year = datetime.now().year
+    cache = _load_ytd_trade_cache(year)
+    fingerprint = (
+        _cache_fingerprint(cache)
+        if cache and cache.get("deal_count") is not None
+        else _deals_fingerprint(deals, year)
+    )
+
+    if _MEMORY_INDEX is not None and _MEMORY_FINGERPRINT == fingerprint:
+        return _MEMORY_INDEX
+
+    indexed = _load_underlying_index_cache(year, fingerprint)
+    if indexed is None:
+        indexed = _build_underlying_index(deals, year)
+        if cache:
+            _save_underlying_index_cache(year, deals, cache_payload=cache)
+        else:
+            TRADE_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(
+                _underlying_index_cache_path(year),
+                json.dumps(
+                    {
+                        "year": year,
+                        "fingerprint": fingerprint,
+                        "built_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "underlying_count": len(indexed),
+                        "index": indexed,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+
+    _MEMORY_INDEX = indexed
+    _MEMORY_FINGERPRINT = fingerprint
+    return indexed
 
 
 def _compact_trade_row(record: dict[str, Any]) -> dict[str, Any]:
@@ -221,25 +383,29 @@ def _summarize_stock_trades(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _build_swing_hint(
-    stock_code: str,
     recent_stock: list[dict[str, Any]],
     recent_option: list[dict[str, Any]],
     effective_signal: str,
+    *,
+    stock_limit: int,
+    option_limit: int,
 ) -> str | None:
     if not recent_stock and not recent_option:
-        return f"近{TRADE_RECENT_SWING_DAYS}日无该正股成交，波段节奏未受近期操作干扰"
+        return "当年无该正股或关联期权成交记录，波段节奏未受近期操作干扰"
 
     hints: list[str] = []
     if recent_stock:
         sides = [item.get("trd_side") for item in recent_stock]
         if "SELL" in sides and effective_signal == "SELL_SWING":
-            hints.append("近两周已卖出，若信号仍为减仓须避免重复卖、关注印花税")
+            hints.append("最近成交含卖出，若信号仍为减仓须避免重复卖、关注印花税")
         if "BUY" in sides and effective_signal == "BUY_SWING":
-            hints.append("近两周已买入，若信号仍为低吸须避免连续加仓")
-        if len(recent_stock) >= 2:
-            hints.append(f"近{TRADE_RECENT_SWING_DAYS}日正股成交{len(recent_stock)}笔，交易偏频，宜降频")
+            hints.append("最近成交含买入，若信号仍为低吸须避免连续加仓")
+        if len(recent_stock) >= 3:
+            hints.append(f"最近{len(recent_stock)}笔正股成交（上限{stock_limit}笔），交易偏频，宜降频")
     if recent_option:
-        hints.append(f"近{TRADE_RECENT_SWING_DAYS}日有关联期权成交{len(recent_option)}笔，须与备兑/卖权方案一并考虑")
+        hints.append(
+            f"最近{len(recent_option)}笔有关联期权成交（上限{option_limit}笔），须与备兑/卖权方案一并考虑"
+        )
     return "；".join(hints) if hints else None
 
 
@@ -248,46 +414,42 @@ def summarize_trade_history_for_stock(
     deals: list[dict[str, Any]],
     *,
     effective_signal: str = "HOLD",
+    underlying_index: dict[str, dict[str, list[dict[str, Any]]]] | None = None,
 ) -> dict[str, Any]:
     now = datetime.now()
-    recent_cutoff = now - timedelta(days=TRADE_RECENT_SWING_DAYS)
-    year_prefix = str(now.year)
+    stock_limit = TRADE_RECENT_STOCK_COUNT
+    option_limit = TRADE_RECENT_OPTION_COUNT
 
-    stock_records: list[dict[str, Any]] = []
-    option_records: list[dict[str, Any]] = []
-    recent_stock: list[dict[str, Any]] = []
-    recent_option: list[dict[str, Any]] = []
+    index = underlying_index if underlying_index is not None else _get_underlying_index(deals)
+    bucket = index.get(stock_code, {"stock": [], "option": []})
+    stock_records = bucket.get("stock", [])
+    option_records = bucket.get("option", [])
 
-    for deal in deals:
-        if deal.get("underlying_code") != stock_code:
-            continue
-        deal_time = _parse_deal_time(deal.get("create_time"))
-        is_stock = deal.get("asset_type") == "stock"
-        if is_stock and str(deal.get("create_time", "")).startswith(year_prefix):
-            stock_records.append(deal)
-        if not is_stock and str(deal.get("create_time", "")).startswith(year_prefix):
-            option_records.append(deal)
-        if deal_time and deal_time >= recent_cutoff:
-            if is_stock:
-                recent_stock.append(deal)
-            else:
-                recent_option.append(deal)
-
-    recent_stock.sort(key=lambda item: item.get("create_time", ""), reverse=True)
-    recent_option.sort(key=lambda item: item.get("create_time", ""), reverse=True)
+    recent_stock = stock_records[:stock_limit]
+    recent_option = option_records[:option_limit]
 
     return {
         "lookback_year": now.year,
-        "recent_swing_days": TRADE_RECENT_SWING_DAYS,
+        "recent_stock_trade_limit": stock_limit,
+        "recent_option_trade_limit": option_limit,
         "ytd_summary": _summarize_stock_trades(stock_records),
         "ytd_option_trade_count": len(option_records),
         "recent_swing_window": {
-            "stock_trades": [_compact_trade_row(item) for item in recent_stock[:8]],
-            "option_trades": [_compact_trade_row(item) for item in recent_option[:5]],
+            "stock_trade_limit": stock_limit,
+            "option_trade_limit": option_limit,
+            "stock_trades": [_compact_trade_row(item) for item in recent_stock],
+            "option_trades": [_compact_trade_row(item) for item in recent_option],
             "stock_trade_count": len(recent_stock),
             "option_trade_count": len(recent_option),
+            "ytd_stock_trade_count": len(stock_records),
         },
-        "swing_hint": _build_swing_hint(stock_code, recent_stock, recent_option, effective_signal),
+        "swing_hint": _build_swing_hint(
+            recent_stock,
+            recent_option,
+            effective_signal,
+            stock_limit=stock_limit,
+            option_limit=option_limit,
+        ),
     }
 
 
@@ -295,10 +457,12 @@ def attach_trade_history_to_stocks(
     stocks: list[dict[str, Any]],
     deals: list[dict[str, Any]],
 ) -> None:
+    underlying_index = _get_underlying_index(deals)
     for stock in stocks:
         combined = stock.get("combined_swing_signal") or {}
         stock["trade_history"] = summarize_trade_history_for_stock(
             stock["code"],
             deals,
             effective_signal=str(combined.get("effective_signal", "HOLD")),
+            underlying_index=underlying_index,
         )

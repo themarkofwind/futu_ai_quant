@@ -86,3 +86,18 @@ def compute_stock_indicators(
     snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return analyze_stock_position(quote_ctx, stock, snapshot)
+
+
+def rebuild_stock_trade_plans(
+    stocks: list[dict[str, Any]],
+    snapshot_map: dict[str, dict[str, Any]],
+) -> None:
+    """在组合级风控计算后，按调整后的仓位上限重建交易计划。"""
+    for stock in stocks:
+        stock["stock_trade_plan"] = build_stock_trade_plan(
+            stock,
+            stock.get("swing_strategy") or {},
+            stock.get("combined_swing_signal") or {},
+            snapshot_map.get(stock["code"]),
+            stock.get("pnl") or {},
+        )

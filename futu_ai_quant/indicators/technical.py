@@ -16,6 +16,7 @@ from futu_ai_quant.config.settings import (
     RSI_LENGTH,
     VOLUME_MA_LENGTH,
 )
+from futu_ai_quant.indicators.ensemble import compute_technical_ensemble
 from futu_ai_quant.indicators.kline_cache import fetch_history_kline_cached
 from futu_ai_quant.market.session import evaluate_volume_confirmed
 from futu_ai_quant.strategy.signals import (
@@ -63,14 +64,9 @@ def _resolve_atr_column(frame: pd.DataFrame) -> str:
     return atr_col
 
 
-def compute_timeframe_indicators(
-    quote_ctx: OpenQuoteContext,
-    code: str,
-    ktype: KLType,
-    max_count: int,
-) -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "timeframe": "daily" if ktype == KLType.K_DAY else "weekly",
+def _empty_indicator_result(timeframe: str) -> dict[str, Any]:
+    return {
+        "timeframe": timeframe,
         "technical_close": None,
         "rsi": None,
         "boll_upper": None,
@@ -90,32 +86,68 @@ def compute_timeframe_indicators(
         "volume_note": None,
         "volume_confirmed": False,
         "swing_signal": "WAIT",
+        "close_history": [],
+        "technical_ensemble": None,
         "error": None,
     }
 
-    try:
-        ret, kline, _ = fetch_history_kline_cached(quote_ctx, code, ktype, max_count)
-        if ret != RET_OK or kline is None or kline.empty:
-            result["error"] = f"K线拉取失败: {kline}"
-            return result
 
-        frame = kline.copy()
-        frame.ta.rsi(close="close", length=RSI_LENGTH, append=True)
-        frame.ta.bbands(close="close", length=BOLL_LENGTH, std=BOLL_STD, append=True)
-        frame.ta.macd(
+def resample_to_weekly(frame: pd.DataFrame) -> pd.DataFrame:
+    """将日 K 重采样为周 K（供回测与指标计算复用）。"""
+    work = frame.copy()
+    if "time_key" in work.columns:
+        work["dt"] = pd.to_datetime(work["time_key"], errors="coerce")
+    elif "date" in work.columns:
+        work["dt"] = pd.to_datetime(work["date"], errors="coerce")
+    else:
+        work["dt"] = pd.date_range(end=pd.Timestamp.today().normalize(), periods=len(work), freq="B")
+
+    work = work.dropna(subset=["dt"]).set_index("dt").sort_index()
+    weekly = work.resample("W").agg(
+        {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }
+    ).dropna(subset=["close"])
+    return weekly.reset_index(drop=True)
+
+
+def compute_indicators_from_frame(
+    frame: pd.DataFrame,
+    timeframe: str,
+) -> dict[str, Any]:
+    """从 OHLCV DataFrame 计算单周期指标（供实盘与回测共用）。"""
+    result = _empty_indicator_result(timeframe)
+
+    if frame is None or frame.empty or "close" not in frame.columns:
+        result["error"] = "K线数据为空"
+        return result
+
+    try:
+        work = frame.copy()
+        for col in ("open", "high", "low", "close", "volume"):
+            if col in work.columns:
+                work[col] = pd.to_numeric(work[col], errors="coerce")
+
+        work.ta.rsi(close="close", length=RSI_LENGTH, append=True)
+        work.ta.bbands(close="close", length=BOLL_LENGTH, std=BOLL_STD, append=True)
+        work.ta.macd(
             close="close",
             fast=MACD_FAST,
             slow=MACD_SLOW,
             signal=MACD_SIGNAL,
             append=True,
         )
-        frame.ta.atr(high="high", low="low", close="close", length=ATR_LENGTH, append=True)
+        work.ta.atr(high="high", low="low", close="close", length=ATR_LENGTH, append=True)
 
-        latest = frame.iloc[-1]
-        prev = frame.iloc[-2] if len(frame) >= 2 else latest
-        rsi_col, boll_upper_col, boll_mid_col, boll_lower_col = _resolve_indicator_columns(frame)
-        macd_col, hist_col, signal_col = _resolve_macd_columns(frame)
-        atr_col = _resolve_atr_column(frame)
+        latest = work.iloc[-1]
+        prev = work.iloc[-2] if len(work) >= 2 else latest
+        rsi_col, boll_upper_col, boll_mid_col, boll_lower_col = _resolve_indicator_columns(work)
+        macd_col, hist_col, signal_col = _resolve_macd_columns(work)
+        atr_col = _resolve_atr_column(work)
 
         technical_close = safe_float(latest.get("close"))
         rsi = safe_float(latest.get(rsi_col))
@@ -123,7 +155,6 @@ def compute_timeframe_indicators(
         boll_mid = safe_float(latest.get(boll_mid_col))
         boll_lower = safe_float(latest.get(boll_lower_col))
         boll_position = describe_boll_position(technical_close, boll_upper, boll_mid, boll_lower)
-        timeframe = result["timeframe"]
 
         macd_line = safe_float(latest.get(macd_col))
         macd_signal_val = safe_float(latest.get(signal_col))
@@ -140,8 +171,8 @@ def compute_timeframe_indicators(
         atr = safe_float(latest.get(atr_col))
         volume = safe_float(latest.get("volume"))
         volume_ma = (
-            round(float(frame["volume"].tail(VOLUME_MA_LENGTH).mean()), 2)
-            if "volume" in frame.columns and len(frame) >= 5
+            round(float(work["volume"].tail(VOLUME_MA_LENGTH).mean()), 2)
+            if "volume" in work.columns and len(work) >= 5
             else None
         )
         volume_ratio_raw = (
@@ -161,6 +192,9 @@ def compute_timeframe_indicators(
             macd_bias=macd_bias,
             volume_confirmed=volume_confirmed,
         )
+
+        close_history = [safe_float(v) for v in work["close"].tail(60).tolist() if safe_float(v) is not None]
+        ensemble = compute_technical_ensemble(work) if timeframe == "daily" else None
 
         result.update(
             {
@@ -183,12 +217,34 @@ def compute_timeframe_indicators(
                 "volume_note": volume_note,
                 "volume_confirmed": volume_confirmed,
                 "swing_signal": swing_signal,
+                "close_history": close_history,
+                "technical_ensemble": ensemble,
             }
         )
     except Exception as exc:
         result["error"] = str(exc)
 
     return result
+
+
+def compute_timeframe_indicators(
+    quote_ctx: OpenQuoteContext,
+    code: str,
+    ktype: KLType,
+    max_count: int,
+) -> dict[str, Any]:
+    timeframe = "daily" if ktype == KLType.K_DAY else "weekly"
+    result = _empty_indicator_result(timeframe)
+
+    try:
+        ret, kline, _ = fetch_history_kline_cached(quote_ctx, code, ktype, max_count)
+        if ret != RET_OK or kline is None or kline.empty:
+            result["error"] = f"K线拉取失败: {kline}"
+            return result
+        return compute_indicators_from_frame(kline, timeframe)
+    except Exception as exc:
+        result["error"] = str(exc)
+        return result
 
 
 def scale_atr_to_market(

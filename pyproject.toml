@@ -22,6 +22,7 @@ dev = ["pytest>=8.0", "ruff>=0.8", "pip-tools>=7.4"]
 [project.scripts]
 futu-analyze = "futu_ai_quant.cli.analyze:main"
 futu-sim = "futu_ai_quant.cli.sim:main"
+futu-backtest = "futu_ai_quant.cli.backtest:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

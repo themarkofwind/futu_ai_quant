@@ -101,7 +101,7 @@ class TestResolveDecision:
             raise ValueError("API down")
 
         monkeypatch.setattr(
-            "futu_ai_quant.pipeline.cycle.call_deepseek",
+            "futu_ai_quant.pipeline.cycle.call_llm_decision",
             boom,
         )
         client = MagicMock()

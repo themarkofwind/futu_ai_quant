@@ -34,10 +34,10 @@ from typing import Any
 
 from dotenv import load_dotenv
 from futu import OpenQuoteContext, TrdMarket
-from openai import OpenAI
 
 from futu_ai_quant.brokers.futu.client import OpenHKTradeContext
 from futu_ai_quant.brokers.futu.positions import maybe_unlock_trade
+from futu_ai_quant.llm.client import create_llm_client
 from futu_ai_quant.market.session import resolve_analysis_interval
 from futu_ai_quant.sim.broker import FutuSimBroker
 from futu_ai_quant.sim.engine import LocalSimEngine
@@ -145,13 +145,7 @@ def main() -> None:
             )
 
         if args.source == "main":
-            api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-            if not api_key:
-                raise RuntimeError("source=main 需要在 .env 配置 DEEPSEEK_API_KEY")
-            ai_client = OpenAI(
-                api_key=api_key,
-                base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip(),
-            )
+            ai_client = create_llm_client()
             trade_ctx = trade_ctx or OpenHKTradeContext(
                 filter_trdmarket=TrdMarket.HK, host=host, port=port
             )

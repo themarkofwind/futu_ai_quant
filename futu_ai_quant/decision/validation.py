@@ -28,7 +28,6 @@ def validate_decision_schema(
     for idx, rec in enumerate(decision["recommendations"]):
         required = (
             "code",
-            "name",
             "action",
             "confidence",
             "reasoning",

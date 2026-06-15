@@ -101,7 +101,8 @@ def _sample_stock() -> dict:
         },
         "trade_history": {
             "lookback_year": 2026,
-            "recent_swing_days": 14,
+            "recent_stock_trade_limit": 5,
+            "recent_option_trade_limit": 5,
             "ytd_summary": {
                 "trade_count": 14,
                 "buy_count": 10,
@@ -109,12 +110,15 @@ def _sample_stock() -> dict:
                 "last_trade": {"time": "2026-06-08", "side": "BUY"},
             },
             "recent_swing_window": {
+                "stock_trade_limit": 5,
+                "option_trade_limit": 5,
                 "stock_trades": [{"time": "2026-06-08", "side": "BUY", "qty": 300}],
                 "option_trades": [],
                 "stock_trade_count": 1,
                 "option_trade_count": 0,
+                "ytd_stock_trade_count": 14,
             },
-            "swing_hint": "近14日正股成交1笔",
+            "swing_hint": "最近1笔正股成交",
         },
         "existing_option_positions": [],
         "indicator_error": None,
@@ -141,7 +145,7 @@ class TestSlimPortfolio:
         slim = slim_stock_for_ai(_sample_stock())
         assert slim["combined_swing_signal"]["effective_signal"] == "HOLD"
         assert slim["swing_strategy"]["loss_tier"] == "moderate_loss"
-        assert slim["trade_history"]["swing_hint"] == "近14日正股成交1笔"
+        assert slim["trade_history"]["swing_hint"] == "最近1笔正股成交"
         assert slim["trade_history"]["recent_swing_window"]["stock_trade_count"] == 1
 
     def test_slim_portfolio_smaller_than_full(self) -> None:
@@ -150,7 +154,9 @@ class TestSlimPortfolio:
             "market": "HK",
             "stocks": [_sample_stock()],
             "options": [],
-            "required_positions": [{"code": "HK.09988", "asset_type": "stock"}],
+            "required_positions": [
+                {"code": "HK.09988", "name": "BABA-W", "asset_type": "stock", "loss_tier": "moderate_loss"},
+            ],
             "summary": {"stock_count": 1},
             "portfolio_risk": {
                 "total_stock_market_val": 100.0,
@@ -164,6 +170,8 @@ class TestSlimPortfolio:
         slim_size = len(json.dumps(slim, ensure_ascii=False, separators=(",", ":")))
         assert slim_size < full_size * 0.7
         assert "position_weights" not in slim["portfolio_risk"]
+        assert "name" not in slim["stocks"][0]
+        assert "name" not in slim["required_positions"][0]
         assert collect_required_codes(slim) == ["HK.09988"]
 
     def test_real_payload_slim_ratio(self) -> None:

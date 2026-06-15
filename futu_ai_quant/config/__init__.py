@@ -6,7 +6,8 @@ from futu_ai_quant.config.settings import (
     OFFHOURS_INTERVAL_SEC,
     OPTION_MAX_DAYS,
     OPTION_MIN_DAYS,
-    TRADE_RECENT_SWING_DAYS,
+    TRADE_RECENT_OPTION_COUNT,
+    TRADE_RECENT_STOCK_COUNT,
 )
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "OPTION_MAX_DAYS",
     "OPTION_MIN_DAYS",
     "SYSTEM_PROMPT",
-    "TRADE_RECENT_SWING_DAYS",
+    "TRADE_RECENT_OPTION_COUNT",
+    "TRADE_RECENT_STOCK_COUNT",
 ]

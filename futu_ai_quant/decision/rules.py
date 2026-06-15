@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from futu_ai_quant.analysis.portfolio import build_portfolio_risk_overlay
-from futu_ai_quant.config.settings import TRADE_RECENT_SWING_DAYS
+from futu_ai_quant.config.settings import TRADE_RECENT_STOCK_COUNT
 from futu_ai_quant.planning.option import empty_option_trade_plan
 from futu_ai_quant.planning.stock import empty_stock_trade_plan
 from futu_ai_quant.utils.numbers import safe_float
@@ -54,9 +54,10 @@ def build_rules_reasoning(stock: dict[str, Any]) -> str:
     if trade_hist.get("swing_hint"):
         parts.append(str(trade_hist["swing_hint"]))
     elif (trade_hist.get("recent_swing_window") or {}).get("stock_trade_count", 0):
+        limit = trade_hist.get("recent_stock_trade_limit", TRADE_RECENT_STOCK_COUNT)
         parts.append(
-            f"近{trade_hist.get('recent_swing_days', TRADE_RECENT_SWING_DAYS)}日"
-            f"正股成交{trade_hist['recent_swing_window']['stock_trade_count']}笔"
+            f"最近{limit}笔内正股成交"
+            f"{trade_hist['recent_swing_window']['stock_trade_count']}笔"
         )
     return "；".join(parts)
 
