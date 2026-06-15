@@ -1,0 +1,5 @@
+futu-api
+pandas
+pandas-ta
+openai
+python-dotenv

@@ -68,6 +68,12 @@ futu_ai_quant/
 ### Python 包
 
 ```bash
+pip install -r requirements.txt
+```
+
+或手动安装：
+
+```bash
 pip install futu-api pandas pandas-ta openai python-dotenv
 ```
 
