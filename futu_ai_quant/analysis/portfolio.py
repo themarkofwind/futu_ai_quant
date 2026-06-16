@@ -106,6 +106,7 @@ def build_portfolio_payload(
     *,
     dynamic_risk: dict[str, Any] | None = None,
     analyst_summary: dict[str, Any] | None = None,
+    macro_risk: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     required_positions = [
         {
@@ -145,6 +146,8 @@ def build_portfolio_payload(
     }
     if dynamic_risk is not None:
         payload["portfolio_risk"]["dynamic_risk"] = dynamic_risk
+    if macro_risk is not None:
+        payload["macro_risk"] = macro_risk
     if analyst_summary is not None:
         payload["virtual_analysts"] = analyst_summary
     return payload

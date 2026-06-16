@@ -54,6 +54,7 @@ def call_llm_decision(client: OpenAI, portfolio_payload: dict[str, Any]) -> dict
         f"必须覆盖的全部代码：{code_list_text}\n"
         f"{analyst_hint}"
         "策略框架：周K定方向、日K找时机；综合 RSI/布林带/MACD/成交量/ATR 与 technical_ensemble 研判。\n"
+        "须参考 macro_risk：宏观风险已预计算进 stock_trade_plan。\n"
         "各正股 analyst_signals 为规则化预分析信号，请与 stock_trade_plan 一并参考，但数量须以预计算 plan 为准。\n"
         "价格字段：pnl.market_price 是未复权现价；daily/weekly.technical_close 是复权技术价，禁止混用。\n"
         "每个正股已预计算 stock_trade_plan（整手股数 lot_size、具体手数/股数）与 option_trade_plan，"

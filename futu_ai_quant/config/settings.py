@@ -90,3 +90,15 @@ STOCK_NAMES_DIR = Path(os.getenv("STOCK_NAMES_DIR", "data/stock_names"))
 STOCK_NAMES_CACHE_HOURS = int(os.getenv("STOCK_NAMES_CACHE_HOURS", "168"))
 STOCK_NAME_ZH_ENRICH = os.getenv("STOCK_NAME_ZH_ENRICH", "1").lower() not in ("0", "false", "no")
 FUTU_HISTORY_QUERY_DAYS = 90
+
+# ---------- 宏观风险 overlay ----------
+MACRO_RISK_ENABLED = os.getenv("MACRO_RISK_ENABLED", "1").lower() not in ("0", "false", "no")
+MACRO_CALENDAR_PATH = Path(os.getenv("MACRO_CALENDAR_PATH", "data/macro_calendar.json"))
+MACRO_HSI_CODE = os.getenv("MACRO_HSI_CODE", "HK.800000")
+MACRO_GOLD_CODE = os.getenv("MACRO_GOLD_CODE", "HK.02840").strip()  # 留空则禁用黄金指标
+MACRO_HSI_5D_DROP_PCT = float(os.getenv("MACRO_HSI_5D_DROP_PCT", "-5"))
+MACRO_HSI_TODAY_DROP_PCT = float(os.getenv("MACRO_HSI_TODAY_DROP_PCT", "-2.5"))
+MACRO_GOLD_5D_RISE_PCT = float(os.getenv("MACRO_GOLD_5D_RISE_PCT", "3"))
+MACRO_FED_BLACKOUT_DAYS = int(os.getenv("MACRO_FED_BLACKOUT_DAYS", "2"))
+MACRO_SWING_MULTIPLIER_ELEVATED = float(os.getenv("MACRO_SWING_MULTIPLIER_ELEVATED", "0.7"))
+MACRO_SWING_MULTIPLIER_HIGH = float(os.getenv("MACRO_SWING_MULTIPLIER_HIGH", "0.5"))

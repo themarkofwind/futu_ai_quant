@@ -96,6 +96,12 @@ def _build_risk_analyst(stock: dict[str, Any]) -> dict[str, Any]:
         confidence = 50.0
         reasoning = "波动率与相关性未触发额外限仓"
 
+    macro_mult = limits.get("macro_swing_multiplier")
+    if macro_mult not in (None, 1.0):
+        signal = "caution"
+        confidence = max(confidence, 70.0)
+        reasoning += f"；宏观风险收紧×{macro_mult:g}"
+
     return {
         "analyst": "risk",
         "signal": signal,

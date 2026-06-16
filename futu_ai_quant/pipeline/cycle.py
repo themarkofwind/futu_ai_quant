@@ -37,6 +37,7 @@ from futu_ai_quant.domain.positions import classify_positions
 from futu_ai_quant.history.trades import attach_trade_history_to_stocks, load_ytd_trade_history
 from futu_ai_quant.llm.settings import llm_provider
 from futu_ai_quant.market.symbol_names import resolve_symbol_names
+from futu_ai_quant.risk.macro_overlay import attach_macro_risk_overlay
 from futu_ai_quant.risk.position_limits import attach_portfolio_risk_limits
 from futu_ai_quant.utils.logging import log
 
@@ -188,13 +189,24 @@ def run_analysis_cycle(
 
     log("风控", "计算波动率与相关性动态仓位上限...")
     dynamic_risk = attach_portfolio_risk_limits(stocks)
+
+    log("宏观", "评估恒指/黄金/FOMC 宏观风险...")
+    macro_risk = attach_macro_risk_overlay(quote_ctx, stocks)
+    if macro_risk.get("risk_level") not in (None, "normal"):
+        log("宏观", macro_risk.get("summary", "宏观风险收紧波段上限"))
+
     rebuild_stock_trade_plans(stocks, snapshot_map)
     for stock in stocks:
         limits = stock.get("risk_limits") or {}
         tier = limits.get("tier_max_swing_pct")
         adj = limits.get("adjusted_max_swing_pct")
+        macro_mult = limits.get("macro_swing_multiplier")
         if tier is not None and adj is not None and adj < tier:
-            log("风控", f"{stock['code']} 波段上限 {tier}% → {adj}%（波动/相关性调整）")
+            note = f"波段上限 {tier}% → {adj}%（波动/相关性"
+            if macro_mult not in (None, 1.0):
+                note += f"/宏观×{macro_mult:g}"
+            note += "调整）"
+            log("风控", f"{stock['code']} {note}")
 
     attach_trade_history_to_stocks(stocks, ytd_deals)
     for stock in stocks:
@@ -230,6 +242,7 @@ def run_analysis_cycle(
         options,
         dynamic_risk=dynamic_risk,
         analyst_summary=analyst_summary,
+        macro_risk=macro_risk,
     )
     required_codes = collect_required_codes(payload)
     stocks_by_code = {s["code"]: s for s in stocks}

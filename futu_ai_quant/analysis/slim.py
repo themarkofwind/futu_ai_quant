@@ -335,6 +335,18 @@ def _slim_dynamic_risk(dynamic: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _slim_macro_risk(macro: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not macro:
+        return None
+    return {
+        "enabled": macro.get("enabled"),
+        "risk_level": macro.get("risk_level"),
+        "swing_pct_multiplier": macro.get("swing_pct_multiplier"),
+        "triggers": macro.get("triggers") or [],
+        "summary": macro.get("summary"),
+    }
+
+
 def slim_portfolio_for_ai(portfolio_payload: dict[str, Any]) -> dict[str, Any]:
     """生成发给 DeepSeek 的精简 portfolio；全量 payload 仍写入 ``data/payloads``。"""
     risk = portfolio_payload.get("portfolio_risk") or {}
@@ -352,6 +364,7 @@ def slim_portfolio_for_ai(portfolio_payload: dict[str, Any]) -> dict[str, Any]:
             "dynamic_risk": _slim_dynamic_risk(risk.get("dynamic_risk")),
         },
         "virtual_analysts": portfolio_payload.get("virtual_analysts"),
+        "macro_risk": _slim_macro_risk(portfolio_payload.get("macro_risk")),
         "stocks": [slim_stock_for_ai(stock) for stock in portfolio_payload.get("stocks", [])],
         "options": [slim_option_for_ai(opt) for opt in portfolio_payload.get("options", [])],
     }
