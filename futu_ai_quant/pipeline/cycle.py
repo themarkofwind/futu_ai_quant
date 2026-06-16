@@ -151,6 +151,9 @@ def run_analysis_cycle(
 
         if enriched.get("indicator_error"):
             log("指标", f"{stock['code']} 部分指标失败: {enriched['indicator_error']}")
+        dq = enriched.get("data_quality") or {}
+        if dq.get("status") == "degraded":
+            log("数据", f"{stock['code']} {dq.get('summary', '数据质量不足')}")
         log(
             "指标",
             f"{stock['code']} [{tier}] "

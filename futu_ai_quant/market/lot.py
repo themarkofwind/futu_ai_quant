@@ -6,14 +6,27 @@ from futu_ai_quant.utils.numbers import safe_float
 
 
 def resolve_lot_size(snapshot: dict[str, Any] | None, stock: dict[str, Any] | None = None) -> int:
-    """从行情快照读取每手股数，港股交易须按整手下单。"""
+    """从行情快照读取每手股数；未知时回退默认值（调用方应结合 ``resolve_lot_size_detail`` 判断可信度）。"""
+    lot_size, _ = resolve_lot_size_detail(snapshot, stock)
+    return lot_size
+
+
+def resolve_lot_size_detail(
+    snapshot: dict[str, Any] | None,
+    stock: dict[str, Any] | None = None,
+) -> tuple[int, bool]:
+    """
+    返回 (每手股数, 是否已从行情/持仓确认)。
+
+    ``confirmed=False`` 表示使用了默认回退值，不得用于生成真实交易数量。
+    """
     for source in (snapshot, stock):
         if not source:
             continue
         lot_size = safe_float(source.get("lot_size"))
         if lot_size is not None and int(lot_size) > 0:
-            return int(lot_size)
-    return 100
+            return int(lot_size), True
+    return 100, False
 
 
 def calc_full_lot_trade_qty(

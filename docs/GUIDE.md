@@ -258,9 +258,10 @@ cli/sim.main()
 ### 环境变量示例
 
 ```bash
-# 默认 DeepSeek（向后兼容）
+# 默认 DeepSeek V4 Flash（向后兼容 DEEPSEEK_API_KEY）
 DEEPSEEK_API_KEY=sk-...
 DEEPSEEK_BASE_URL=https://api.deepseek.com
+# LLM_MODEL 留空即 deepseek-v4-flash；更强推理可设 deepseek-v4-pro
 
 # 或显式指定提供商
 LLM_PROVIDER=openai
@@ -374,7 +375,7 @@ quote.close()
 | `TRADE_RECENT_OPTION_COUNT` | `5` | 每只正股下保留最近 N 笔**关联期权**成交 |
 | `TRADE_HISTORY_CACHE_HOURS` | `12` | 成交 YTD 缓存有效期（小时内跳过 Futu API） |
 | `LLM_PROVIDER` | `deepseek` | LLM 提供商：`deepseek` / `openai` / `anthropic` / `custom` |
-| `LLM_MODEL` | （空） | 留空则用提供商默认模型 |
+| `LLM_MODEL` | `deepseek-v4-flash` | 留空则用提供商默认；DeepSeek 亦可 `deepseek-v4-pro` |
 | `LLM_API_KEY` | （空） | 通用 API Key（`custom` 时使用） |
 | `LLM_TEMPERATURE` | `0.2` | LLM 温度 |
 | `LLM_MAX_TOKENS` | `8192` | LLM 最大输出 token |

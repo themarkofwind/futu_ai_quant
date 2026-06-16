@@ -22,7 +22,7 @@ def fetch_snapshot_map(
     quote_ctx: OpenQuoteContext,
     codes: list[str],
 ) -> dict[str, dict[str, Any]]:
-    """批量 get_market_snapshot，每批最多 200 代码。"""
+    """批量 get_market_snapshot，每批最多 200 代码；失败代码逐只补拉。"""
     snapshot_map: dict[str, dict[str, Any]] = {}
     if not codes:
         return snapshot_map
@@ -32,7 +32,7 @@ def fetch_snapshot_map(
         batch = codes[idx : idx + batch_size]
         try:
             ret, snapshot = retry_call(
-                lambda: quote_ctx.get_market_snapshot(batch),
+                lambda b=batch: quote_ctx.get_market_snapshot(b),
                 label=f"快照 batch@{idx}",
                 expect_ret_ok=True,
             )
@@ -43,6 +43,27 @@ def fetch_snapshot_map(
                 snapshot_map[str(row["code"])] = row.to_dict()
         except Exception as exc:
             log("快照", f"快照拉取异常: {exc}")
+
+    missing = [code for code in codes if code not in snapshot_map]
+    for code in missing:
+        try:
+            ret, snapshot = retry_call(
+                lambda c=code: quote_ctx.get_market_snapshot([c]),
+                label=f"快照补拉 {code}",
+                expect_ret_ok=True,
+            )
+            if ret != RET_OK or snapshot is None or snapshot.empty:
+                log("快照", f"{code} 补拉失败: {snapshot}")
+                continue
+            snapshot_map[str(snapshot.iloc[0]["code"])] = snapshot.iloc[0].to_dict()
+        except Exception as exc:
+            log("快照", f"{code} 补拉异常: {exc}")
+
+    if missing:
+        still_missing = [code for code in missing if code not in snapshot_map]
+        if still_missing:
+            log("快照", f"仍缺失快照: {', '.join(still_missing)}")
+
     return snapshot_map
 
 

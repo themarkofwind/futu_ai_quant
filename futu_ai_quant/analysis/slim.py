@@ -287,6 +287,7 @@ def slim_stock_for_ai(stock: dict[str, Any]) -> dict[str, Any]:
         "daily": _slim_timeframe(stock.get("daily")),
         "weekly": _slim_timeframe(stock.get("weekly")),
         "combined_swing_signal": stock.get("combined_swing_signal"),
+        "data_quality": stock.get("data_quality"),
         "analyst_signals": _slim_analyst_signals(stock.get("analyst_signals")),
         "stock_trade_plan": _slim_stock_trade_plan(stock.get("stock_trade_plan")),
         "option_trade_plan": _slim_option_trade_plan(option_plan),

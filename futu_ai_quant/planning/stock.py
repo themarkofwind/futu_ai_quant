@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from futu_ai_quant.analysis.data_quality import apply_data_quality_to_trade_plan
 from futu_ai_quant.indicators.technical import scale_atr_to_market
 from futu_ai_quant.market.fees import (
     swing_trade_meets_cost_threshold,
 )
-from futu_ai_quant.market.lot import calc_full_lot_trade_qty, resolve_lot_size
+from futu_ai_quant.market.lot import calc_full_lot_trade_qty, resolve_lot_size_detail
 from futu_ai_quant.utils.numbers import safe_float
 
 
@@ -58,7 +59,10 @@ def build_stock_trade_plan(
 ) -> dict[str, Any]:
     qty = safe_float(stock.get("qty")) or 0.0
     can_sell = safe_float(stock.get("can_sell_qty")) or qty
-    lot_size = resolve_lot_size(snapshot, stock)
+    lot_size, lot_confirmed = resolve_lot_size_detail(snapshot, stock)
+    if stock.get("lot_confirmed") is True:
+        lot_confirmed = True
+        lot_size = int(stock.get("lot_size") or lot_size)
     max_pct = float(swing_strategy.get("max_swing_position_pct") or 10)
     risk_limits = stock.get("risk_limits") or {}
     if risk_limits.get("adjusted_max_swing_pct") is not None:
@@ -83,7 +87,13 @@ def build_stock_trade_plan(
         "trigger_price_high": None,
         "atr_used": None,
         "trade_note": None,
+        "lot_confirmed": lot_confirmed,
     }
+
+    if not lot_confirmed:
+        plan["trade_note"] = "每手股数未从行情确认，暂不生成交易数量"
+        apply_data_quality_to_trade_plan(plan, stock)
+        return plan
 
     daily = stock.get("daily") or {}
     atr_market = scale_atr_to_market(
@@ -141,6 +151,7 @@ def build_stock_trade_plan(
             capacity_note=note,
         )
 
+    apply_data_quality_to_trade_plan(plan, stock)
     return plan
 
 

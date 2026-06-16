@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 _DEFAULT_MODELS = {
-    "deepseek": "deepseek-chat",
+    "deepseek": "deepseek-v4-flash",
     "openai": "gpt-4o-mini",
     "anthropic": "claude-3-5-sonnet-20241022",
     "custom": "gpt-4o-mini",
@@ -57,4 +57,4 @@ def resolve_llm_model(provider: str | None = None) -> str:
     if explicit:
         return explicit
     key = (provider or llm_provider()).lower()
-    return _DEFAULT_MODELS.get(key, "deepseek-chat")
+    return _DEFAULT_MODELS.get(key, "deepseek-v4-flash")

@@ -19,7 +19,7 @@
 5. **动态风控**：按 60 日波动率与持仓间相关性，在分层仓位上限内进一步收紧波段比例
 6. **期权扫描**：14–45 天到期、Delta 0.10–0.30 的卖 Call / 卖 Put 候选，含 IV Rank
 7. **交易计划**：整手股数校验、备兑张数限制、触发价区间
-8. **LLM 决策**（默认 DeepSeek，支持 OpenAI / Anthropic / 自定义兼容端点）：输出覆盖全部持仓的 JSON 建议，缺失自动重试
+8. **LLM 决策**（默认 DeepSeek V4 Flash `deepseek-v4-flash`，支持 OpenAI / Anthropic / 自定义兼容端点）：输出覆盖全部持仓的 JSON 建议，缺失自动重试
 9. **持久化**：输入保存至 `data/payloads/`，决策保存至 `data/decisions/`
 
 ### `sim_trader.py` — 模拟交易与绩效跟踪
@@ -375,7 +375,7 @@ A: 日K 量比为「当日累计量 / 20 日均量」，早盘通常偏低；收
 A: 先买回平旧仓，再扫描同标的远月同行权价合约开新空仓；完整盈亏需平+开都完成才体现。
 
 **Q: 如何切换 LLM 提供商？**  
-A: 在 `.env` 设置 `LLM_PROVIDER`（`deepseek` / `openai` / `anthropic` / `custom`）及对应 API Key；`LLM_MODEL` 留空则用提供商默认模型。仍兼容原有 `DEEPSEEK_API_KEY`。
+A: 在 `.env` 设置 `LLM_PROVIDER`（`deepseek` / `openai` / `anthropic` / `custom`）及对应 API Key。默认 DeepSeek 模型为 `deepseek-v4-flash`（`LLM_MODEL` 留空即用；可改为 `deepseek-v4-pro`）。仍兼容 `DEEPSEEK_API_KEY`。
 
 **Q: `futu-backtest` 与 `sim_trader` 有什么区别？**  
 A: `futu-backtest` 用历史 K 线回放**规则信号**的前瞻收益，不调 LLM；`sim_trader` 是前向纸面交易，跟踪实际决策的撮合与净值。

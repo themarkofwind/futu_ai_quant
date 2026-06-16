@@ -301,12 +301,7 @@ def _get_underlying_index(deals: list[dict[str, Any]]) -> dict[str, dict[str, li
     global _MEMORY_INDEX, _MEMORY_FINGERPRINT
 
     year = datetime.now().year
-    cache = _load_ytd_trade_cache(year)
-    fingerprint = (
-        _cache_fingerprint(cache)
-        if cache and cache.get("deal_count") is not None
-        else _deals_fingerprint(deals, year)
-    )
+    fingerprint = _deals_fingerprint(deals, year)
 
     if _MEMORY_INDEX is not None and _MEMORY_FINGERPRINT == fingerprint:
         return _MEMORY_INDEX
@@ -314,9 +309,11 @@ def _get_underlying_index(deals: list[dict[str, Any]]) -> dict[str, dict[str, li
     indexed = _load_underlying_index_cache(year, fingerprint)
     if indexed is None:
         indexed = _build_underlying_index(deals, year)
-        if cache:
-            _save_underlying_index_cache(year, deals, cache_payload=cache)
-        else:
+        cache = _load_ytd_trade_cache(year)
+        cache_deals = (cache or {}).get("deals", [])
+        if cache and _deals_fingerprint(cache_deals, year) == fingerprint:
+            _save_underlying_index_cache(year, cache_deals, cache_payload=cache)
+        elif deals:
             TRADE_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
             atomic_write_text(
                 _underlying_index_cache_path(year),

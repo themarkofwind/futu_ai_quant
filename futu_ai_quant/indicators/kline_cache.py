@@ -1,8 +1,8 @@
 """
-K 线短期缓存（默认关闭）：减少 OpenD ``request_history_kline`` 重复调用。
+K 线短期缓存：减少 OpenD ``request_history_kline`` 重复调用。
 
-在 ``.env`` 中设置 ``KLINE_CACHE_ENABLED=1`` 后生效；
-日K ``KLINE_CACHE_TTL_SEC``、周K ``KLINE_WEEKLY_CACHE_TTL_SEC`` 建议小于分析间隔。
+- 磁盘/内存缓存：``KLINE_CACHE_ENABLED`` 默认开启，日K TTL 默认 1500s
+- 单轮去重：``KLINE_ROUND_CACHE_TTL_SEC``（默认 600s）在每次分析内始终生效
 """
 
 from __future__ import annotations
@@ -19,12 +19,14 @@ from futu_ai_quant.config.settings import (
     KLINE_CACHE_DIR,
     KLINE_CACHE_ENABLED,
     KLINE_CACHE_TTL_SEC,
+    KLINE_ROUND_CACHE_TTL_SEC,
     KLINE_WEEKLY_CACHE_TTL_SEC,
 )
 from futu_ai_quant.utils.logging import log
 from futu_ai_quant.utils.retry import retry_call
 
 _MEMORY: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_ROUND_MEMORY: dict[str, tuple[float, pd.DataFrame]] = {}
 
 
 def _timeframe_name(ktype: KLType) -> str:
@@ -118,6 +120,24 @@ def put_cached_kline(
 def clear_kline_cache() -> None:
     """测试或强制刷新时清空内存缓存。"""
     _MEMORY.clear()
+    _ROUND_MEMORY.clear()
+
+
+def _get_round_cached_frame(key: str) -> pd.DataFrame | None:
+    entry = _ROUND_MEMORY.get(key)
+    if entry is None:
+        return None
+    fetched_at, frame = entry
+    if (time.time() - fetched_at) >= KLINE_ROUND_CACHE_TTL_SEC:
+        _ROUND_MEMORY.pop(key, None)
+        return None
+    return frame.copy()
+
+
+def _put_round_cached_frame(key: str, frame: pd.DataFrame) -> None:
+    if frame is None or frame.empty:
+        return
+    _ROUND_MEMORY[key] = (time.time(), frame.copy())
 
 
 def fetch_history_kline_cached(
@@ -126,9 +146,17 @@ def fetch_history_kline_cached(
     ktype: KLType,
     max_count: int,
 ) -> tuple[int, pd.DataFrame | None, Any]:
+    key = cache_key(code, ktype, max_count)
+
+    round_cached = _get_round_cached_frame(key)
+    if round_cached is not None and not round_cached.empty:
+        log("K线缓存", f"命中本轮 {code} {_timeframe_name(ktype)}")
+        return RET_OK, round_cached, None
+
     cached = get_cached_kline(code, ktype, max_count)
     if cached is not None and not cached.empty:
         log("K线缓存", f"命中内存 {code} {_timeframe_name(ktype)}")
+        _put_round_cached_frame(key, cached)
         return RET_OK, cached, None
 
     ret, kline, page_req_key = retry_call(
@@ -143,4 +171,5 @@ def fetch_history_kline_cached(
     )
     if ret == RET_OK and kline is not None and not kline.empty:
         put_cached_kline(code, ktype, max_count, kline)
+        _put_round_cached_frame(key, kline)
     return ret, kline, page_req_key

@@ -11,11 +11,12 @@ from typing import Any
 
 from futu import KLType, OpenQuoteContext
 
+from futu_ai_quant.analysis.data_quality import attach_data_quality
 from futu_ai_quant.brokers.futu.options import scan_sell_option_candidates
 from futu_ai_quant.brokers.futu.quotes import enrich_stock_pnl
 from futu_ai_quant.config.settings import KLINE_COUNT, WEEKLY_KLINE_COUNT
 from futu_ai_quant.indicators.technical import compute_timeframe_indicators
-from futu_ai_quant.market.lot import resolve_lot_size
+from futu_ai_quant.market.lot import resolve_lot_size_detail
 from futu_ai_quant.planning.option import build_option_trade_plan_for_stock
 from futu_ai_quant.planning.stock import build_stock_trade_plan
 from futu_ai_quant.strategy.profile import build_swing_strategy_profile
@@ -28,8 +29,13 @@ def analyze_stock_position(
     snapshot: dict[str, Any] | None,
 ) -> dict[str, Any]:
     pnl = enrich_stock_pnl(stock, snapshot)
-    lot_size = resolve_lot_size(snapshot, stock)
-    stock = {**stock, "lot_size": lot_size, "shares_per_lot": lot_size}
+    lot_size, lot_confirmed = resolve_lot_size_detail(snapshot, stock)
+    stock = {
+        **stock,
+        "lot_size": lot_size,
+        "shares_per_lot": lot_size,
+        "lot_confirmed": lot_confirmed,
+    }
     swing_strategy = build_swing_strategy_profile(pnl.get("pl_ratio"))
 
     daily = compute_timeframe_indicators(quote_ctx, stock["code"], KLType.K_DAY, KLINE_COUNT)
@@ -52,26 +58,33 @@ def analyze_stock_position(
         swing_strategy,
         primary_timeframe=primary,
     )
+    enriched = {
+        **stock,
+        "pnl": pnl,
+        "swing_strategy": swing_strategy,
+        "daily": daily,
+        "weekly": weekly,
+        "combined_swing_signal": combined_swing_signal,
+    }
+    attach_data_quality(enriched, snapshot=snapshot, lot_confirmed=lot_confirmed)
+    combined_swing_signal = enriched["combined_swing_signal"]
+
     stock_trade_plan = build_stock_trade_plan(
-        {**stock, "daily": daily, "weekly": weekly},
+        enriched,
         swing_strategy,
         combined_swing_signal,
         snapshot,
         pnl,
     )
     option_trade_plan = build_option_trade_plan_for_stock(
-        stock,
+        enriched,
         option_overlay,
         swing_strategy,
         combined_swing_signal,
     )
 
     return {
-        **stock,
-        "pnl": pnl,
-        "swing_strategy": swing_strategy,
-        "daily": daily,
-        "weekly": weekly,
+        **enriched,
         "combined_swing_signal": combined_swing_signal,
         "stock_trade_plan": stock_trade_plan,
         "option_trade_plan": option_trade_plan,
