@@ -11,6 +11,83 @@ from futu_ai_quant.market.lot import calc_full_lot_trade_qty, resolve_lot_size_d
 from futu_ai_quant.utils.numbers import safe_float
 
 
+def _sell_swing_band(
+    market_price: float,
+    atr_market: float | None,
+) -> tuple[float, float]:
+    if atr_market is not None:
+        return (
+            round(market_price + 0.5 * atr_market, 3),
+            round(market_price + 1.5 * atr_market, 3),
+        )
+    return round(market_price * 1.01, 3), round(market_price * 1.04, 3)
+
+
+def _buy_swing_band(
+    market_price: float,
+    atr_market: float | None,
+) -> tuple[float, float]:
+    if atr_market is not None:
+        return (
+            round(market_price - 1.5 * atr_market, 3),
+            round(market_price - 0.5 * atr_market, 3),
+        )
+    return round(market_price * 0.96, 3), round(market_price * 0.99, 3)
+
+
+def attach_watch_triggers(
+    plan: dict[str, Any],
+    swing_strategy: dict[str, Any],
+    *,
+    market_price: float,
+    atr_market: float | None,
+) -> None:
+    """HOLD/WAIT 时给出条件观望参考价（不生成实际挂单数量）。"""
+    tier = str(swing_strategy.get("loss_tier") or "moderate_loss")
+    watches: list[dict[str, Any]] = []
+
+    if tier in ("moderate_loss", "deep_loss"):
+        low, high = _buy_swing_band(market_price, atr_market)
+        watches.append(
+            {
+                "side": "buy",
+                "price_low": low,
+                "price_high": high,
+                "note": "回调至此区间可考虑低吸降本",
+            }
+        )
+    if tier in ("moderate_loss", "profitable"):
+        low, high = _sell_swing_band(market_price, atr_market)
+        watches.append(
+            {
+                "side": "sell",
+                "price_low": low,
+                "price_high": high,
+                "note": "反弹至此区间可考虑减仓",
+            }
+        )
+
+    plan["watch_triggers"] = watches
+
+
+def format_watch_triggers(plan: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for item in plan.get("watch_triggers") or []:
+        if not isinstance(item, dict):
+            continue
+        low = item.get("price_low")
+        high = item.get("price_high")
+        if low is None or high is None:
+            continue
+        label = "反弹" if item.get("side") == "sell" else "回调"
+        note = str(item.get("note") or "").strip()
+        chunk = f"{label} {low}-{high}"
+        if note:
+            chunk = f"{chunk}（{note}）"
+        parts.append(chunk)
+    return "；".join(parts)
+
+
 def apply_swing_trade_to_plan(
     plan: dict[str, Any],
     *,
@@ -85,6 +162,7 @@ def build_stock_trade_plan(
         "pct_of_holding": 0.0,
         "trigger_price_low": None,
         "trigger_price_high": None,
+        "watch_triggers": [],
         "atr_used": None,
         "trade_note": None,
         "lot_confirmed": lot_confirmed,
@@ -106,19 +184,13 @@ def build_stock_trade_plan(
 
     if market_price is not None:
         if signal == "SELL_SWING":
-            if atr_market is not None:
-                plan["trigger_price_low"] = round(market_price + 0.5 * atr_market, 3)
-                plan["trigger_price_high"] = round(market_price + 1.5 * atr_market, 3)
-            else:
-                plan["trigger_price_low"] = round(market_price * 1.01, 3)
-                plan["trigger_price_high"] = round(market_price * 1.04, 3)
+            low, high = _sell_swing_band(market_price, atr_market)
+            plan["trigger_price_low"] = low
+            plan["trigger_price_high"] = high
         elif signal == "BUY_SWING":
-            if atr_market is not None:
-                plan["trigger_price_low"] = round(market_price - 1.5 * atr_market, 3)
-                plan["trigger_price_high"] = round(market_price - 0.5 * atr_market, 3)
-            else:
-                plan["trigger_price_low"] = round(market_price * 0.96, 3)
-                plan["trigger_price_high"] = round(market_price * 0.99, 3)
+            low, high = _buy_swing_band(market_price, atr_market)
+            plan["trigger_price_low"] = low
+            plan["trigger_price_high"] = high
 
     if signal == "SELL_SWING" and can_sell >= lot_size:
         suggested_qty, suggested_lots, note = calc_full_lot_trade_qty(
@@ -150,6 +222,13 @@ def build_stock_trade_plan(
             atr_market=atr_market,
             capacity_note=note,
         )
+    elif signal in ("HOLD", "WAIT") and market_price is not None and plan["direction"] == "none":
+        attach_watch_triggers(
+            plan,
+            swing_strategy,
+            market_price=market_price,
+            atr_market=atr_market,
+        )
 
     apply_data_quality_to_trade_plan(plan, stock)
     return plan
@@ -164,4 +243,5 @@ def empty_stock_trade_plan() -> dict[str, Any]:
         "pct_of_holding": 0.0,
         "trigger_price_low": None,
         "trigger_price_high": None,
+        "watch_triggers": [],
     }

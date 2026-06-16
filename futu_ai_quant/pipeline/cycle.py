@@ -37,6 +37,7 @@ from futu_ai_quant.domain.positions import classify_positions
 from futu_ai_quant.history.trades import attach_trade_history_to_stocks, load_ytd_trade_history
 from futu_ai_quant.llm.settings import llm_provider
 from futu_ai_quant.market.symbol_names import resolve_symbol_names
+from futu_ai_quant.planning.stock import format_watch_triggers
 from futu_ai_quant.risk.macro_overlay import attach_macro_risk_overlay
 from futu_ai_quant.risk.position_limits import attach_portfolio_risk_limits
 from futu_ai_quant.utils.logging import log
@@ -187,6 +188,10 @@ def run_analysis_cycle(
             )
         elif trade.get("trade_note"):
             log("仓位", f"{stock['code']} 每手{trade.get('lot_size')}股 {trade['trade_note']}")
+        else:
+            watch_text = format_watch_triggers(trade)
+            if watch_text:
+                log("仓位", f"{stock['code']} 每手{trade.get('lot_size')}股 观望参考 {watch_text}")
         if opt_plan:
             log("仓位", f"{stock['code']} 期权方案: {opt_plan.get('label')}")
 
@@ -272,7 +277,7 @@ def run_analysis_cycle(
         payload_saved_path = save_portfolio_payload_record(
             payload,
             required_codes=required_codes,
-            decision_source="deepseek" if use_ai else "rules",
+            decision_source=llm_provider() if use_ai else "rules",
         )
         log("输入", f"模型输入已保存: {payload_saved_path}")
     else:

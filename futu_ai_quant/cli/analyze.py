@@ -32,6 +32,7 @@ from futu import OpenQuoteContext, OpenSecTradeContext, TrdMarket
 from futu_ai_quant.brokers.futu.client import OpenHKTradeContext
 from futu_ai_quant.brokers.futu.positions import maybe_unlock_trade
 from futu_ai_quant.llm.client import create_llm_client
+from futu_ai_quant.llm.cli import add_llm_cli_arguments, apply_llm_cli_overrides, log_llm_runtime_config
 from futu_ai_quant.market.session import resolve_analysis_interval
 from futu_ai_quant.pipeline.cycle import run_analysis_cycle
 from futu_ai_quant.utils.logging import log
@@ -48,8 +49,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-ai",
         action="store_true",
-        help="仅使用规则引擎生成决策，不调用 DeepSeek",
+        help="仅使用规则引擎生成决策，不调用 LLM",
     )
+    add_llm_cli_arguments(parser)
     return parser.parse_args()
 
 
@@ -68,12 +70,14 @@ def main() -> None:
     """
     args = parse_args()
     load_dotenv()
+    apply_llm_cli_overrides(args)
 
     host = os.getenv("FUTU_OPEND_HOST", "127.0.0.1")
     port = int(os.getenv("FUTU_OPEND_PORT", "11111"))
     use_ai = not args.no_ai
 
     if use_ai:
+        log_llm_runtime_config()
         ai_client = create_llm_client()
     else:
         ai_client = None

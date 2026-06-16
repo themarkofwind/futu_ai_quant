@@ -19,6 +19,7 @@ _STOCK_TRADE_PLAN_KEEP = frozenset(
         "pct_of_holding",
         "trigger_price_low",
         "trigger_price_high",
+        "watch_triggers",
         "atr_used",
         "trade_note",
         "plan_source",

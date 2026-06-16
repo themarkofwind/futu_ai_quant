@@ -38,6 +38,7 @@ from futu import OpenQuoteContext, TrdMarket
 from futu_ai_quant.brokers.futu.client import OpenHKTradeContext
 from futu_ai_quant.brokers.futu.positions import maybe_unlock_trade
 from futu_ai_quant.llm.client import create_llm_client
+from futu_ai_quant.llm.cli import add_llm_cli_arguments, apply_llm_cli_overrides, log_llm_runtime_config
 from futu_ai_quant.market.session import resolve_analysis_interval
 from futu_ai_quant.sim.broker import FutuSimBroker
 from futu_ai_quant.sim.engine import LocalSimEngine
@@ -69,6 +70,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="local=仅本地撮合；futu=同步提交 Futu 模拟盘；both=本地+Futu",
     )
+    add_llm_cli_arguments(parser)
     return parser.parse_args()
 
 
@@ -109,6 +111,7 @@ def main() -> None:
     """
     load_dotenv()
     args = parse_args()
+    apply_llm_cli_overrides(args)
     backend = resolve_backend(args)
 
     if args.report:
@@ -145,6 +148,7 @@ def main() -> None:
             )
 
         if args.source == "main":
+            log_llm_runtime_config()
             ai_client = create_llm_client()
             trade_ctx = trade_ctx or OpenHKTradeContext(
                 filter_trdmarket=TrdMarket.HK, host=host, port=port

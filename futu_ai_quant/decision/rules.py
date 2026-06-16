@@ -5,7 +5,7 @@ from typing import Any
 from futu_ai_quant.analysis.portfolio import build_portfolio_risk_overlay
 from futu_ai_quant.config.settings import TRADE_RECENT_STOCK_COUNT
 from futu_ai_quant.planning.option import empty_option_trade_plan
-from futu_ai_quant.planning.stock import empty_stock_trade_plan
+from futu_ai_quant.planning.stock import empty_stock_trade_plan, format_watch_triggers
 from futu_ai_quant.utils.numbers import safe_float
 
 
@@ -89,6 +89,7 @@ def serialize_trade_plan_for_decision(stock: dict[str, Any]) -> dict[str, Any]:
         "pct_of_holding": plan.get("pct_of_holding", 0.0),
         "trigger_price_low": plan.get("trigger_price_low"),
         "trigger_price_high": plan.get("trigger_price_high"),
+        "watch_triggers": plan.get("watch_triggers") or [],
     }
 
 
@@ -120,11 +121,13 @@ def build_rules_decision(
         action = infer_stock_action(stock)
         trigger_low = stock_plan.get("trigger_price_low")
         trigger_high = stock_plan.get("trigger_price_high")
-        suggested_trigger = (
-            f"{trigger_low}-{trigger_high}"
-            if trigger_low is not None and trigger_high is not None
-            else "无"
-        )
+        watch_text = format_watch_triggers(stock_plan)
+        if trigger_low is not None and trigger_high is not None:
+            suggested_trigger = f"{trigger_low}-{trigger_high}"
+        elif watch_text:
+            suggested_trigger = watch_text
+        else:
+            suggested_trigger = "无"
         recommendations.append(
             {
                 "code": stock["code"],

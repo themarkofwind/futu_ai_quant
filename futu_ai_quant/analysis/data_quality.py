@@ -80,6 +80,7 @@ def apply_data_quality_to_trade_plan(plan: dict[str, Any], stock: dict[str, Any]
             "pct_of_holding": 0.0,
             "trigger_price_low": None,
             "trigger_price_high": None,
+            "watch_triggers": [],
             "trade_note": summary,
         }
     )

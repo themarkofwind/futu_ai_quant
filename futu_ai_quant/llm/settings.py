@@ -8,6 +8,7 @@ _DEFAULT_MODELS = {
     "deepseek": "deepseek-v4-flash",
     "openai": "gpt-4o-mini",
     "anthropic": "claude-3-5-sonnet-20241022",
+    "gemini": "gemini-3.5-flash",
     "custom": "gpt-4o-mini",
 }
 
@@ -50,6 +51,17 @@ def openai_base_url() -> str:
 
 def anthropic_api_key() -> str:
     return os.getenv("ANTHROPIC_API_KEY", "").strip()
+
+
+def gemini_api_key() -> str:
+    return os.getenv("GEMINI_API_KEY", "").strip()
+
+
+def gemini_base_url() -> str:
+    return os.getenv(
+        "GEMINI_BASE_URL",
+        "https://generativelanguage.googleapis.com/v1beta/openai/",
+    ).strip()
 
 
 def resolve_llm_model(provider: str | None = None) -> str:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from futu_ai_quant.market.symbol_names import display_name
+from futu_ai_quant.planning.stock import format_watch_triggers
 
 
 def _fmt_num(value: Any, digits: int = 2) -> str:
@@ -62,6 +63,10 @@ def build_technical_summary(stock: dict[str, Any]) -> str:
             f"预计算波段={trade_plan['direction']} "
             f"{trade_plan.get('suggested_lots', 0)}手"
         )
+    else:
+        watch_text = format_watch_triggers(trade_plan)
+        if watch_text:
+            parts.append(f"观望参考={watch_text}")
 
     opt_plan = stock.get("option_trade_plan") or {}
     if opt_plan.get("action") not in (None, "none"):
@@ -157,6 +162,10 @@ def format_decision_summary(decision: dict[str, Any]) -> str:
                 f"({stock_plan.get('suggested_qty', 0)}股) "
                 f"触发 {rec.get('suggested_trigger', '-')}"
             )
+        else:
+            watch_text = format_watch_triggers(stock_plan)
+            if watch_text:
+                lines.append(f"  观望参考：{watch_text}")
 
         opt_plan = rec.get("option_trade_plan") or {}
         if opt_plan.get("action") not in (None, "none"):
