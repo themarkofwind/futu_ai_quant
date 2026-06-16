@@ -26,18 +26,32 @@ def calc_full_lot_trade_qty(
     """
     计算整手交易数量。
     返回 (suggested_qty, suggested_lots, note)；不足一手时 suggested_qty=0。
+
+    若按比例折算不足 1 手，但持仓 ≥ 2 手且可交易 ≥ 1 手，则按最小整手 1 手执行
+    （港股无法下碎股单，小仓位也需以 1 手为最小单位）。
     """
     if lot_size <= 0:
         return 0, 0, "每手股数未知，无法计算整手仓位"
 
     holding = int(abs(holding_qty))
     tradable = int(abs(tradable_qty))
-    max_by_pct = round_down_to_lot(holding * max_pct / 100.0, lot_size)
+    raw_swing_shares = holding * max_pct / 100.0
+    max_by_pct = round_down_to_lot(raw_swing_shares, lot_size)
+    info_note: str | None = None
 
     if for_sell:
         capacity = min(max_by_pct, round_down_to_lot(tradable, lot_size))
     else:
         capacity = max_by_pct
+
+    holding_lots = holding // lot_size
+    tradable_lots = round_down_to_lot(tradable, lot_size) // lot_size
+    if capacity <= 0 and raw_swing_shares > 0 and holding_lots >= 2 and tradable_lots >= 1:
+        capacity = lot_size
+        info_note = (
+            f"按 {max_pct:g}% 折算不足一手（每手 {lot_size} 股），"
+            "持仓≥2手时按最小整手 1 手执行"
+        )
 
     if capacity <= 0:
         note = (
@@ -47,7 +61,7 @@ def calc_full_lot_trade_qty(
         return 0, 0, note
 
     lots = capacity // lot_size
-    return capacity, lots, None
+    return capacity, lots, info_note
 
 
 def round_down_to_lot(shares: float, lot_size: int) -> int:

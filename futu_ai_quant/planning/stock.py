@@ -35,13 +35,16 @@ def apply_swing_trade_to_plan(
         plan["trade_note"] = cost_note
         return
     verb = "卖出" if direction == "sell" else "买入"
+    trade_note = f"建议{verb} {suggested_lots} 手（{suggested_qty} 股，每手 {lot_size} 股）"
+    if capacity_note:
+        trade_note = f"{trade_note}；{capacity_note}"
     plan.update(
         {
             "direction": direction,
             "suggested_qty": suggested_qty,
             "suggested_lots": suggested_lots,
             "pct_of_holding": round(suggested_qty / abs(holding_qty) * 100, 2) if holding_qty else 0.0,
-            "trade_note": f"建议{verb} {suggested_lots} 手（{suggested_qty} 股，每手 {lot_size} 股）",
+            "trade_note": trade_note,
         }
     )
 

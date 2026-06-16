@@ -59,6 +59,31 @@ class TestLotSizing:
         assert qty == 0
         assert note is not None
 
+    def test_calc_full_lot_min_one_lot_when_two_lots_held(self) -> None:
+        """江铜场景：2000 股、每手 1000、20% 折算 400 股 → 卖 1 手。"""
+        qty, lots, note = calc_full_lot_trade_qty(
+            holding_qty=2000,
+            tradable_qty=2000,
+            lot_size=1000,
+            max_pct=20,
+            for_sell=True,
+        )
+        assert qty == 1000
+        assert lots == 1
+        assert note is not None
+        assert "最小整手" in note
+
+    def test_calc_full_lot_no_min_lot_when_only_one_lot(self) -> None:
+        qty, lots, note = calc_full_lot_trade_qty(
+            holding_qty=1000,
+            tradable_qty=1000,
+            lot_size=1000,
+            max_pct=20,
+            for_sell=True,
+        )
+        assert qty == 0
+        assert note is not None
+
 
 class TestSafeFloat:
     def test_none(self) -> None:
