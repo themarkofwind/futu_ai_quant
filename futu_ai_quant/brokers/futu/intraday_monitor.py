@@ -17,12 +17,16 @@ from futu import (
 )
 
 from futu_ai_quant.brokers.futu.intraday_kline import fetch_intraday_5m_klines
+from futu_ai_quant.brokers.futu.quotes import fetch_snapshot_map
 from futu_ai_quant.indicators.intraday import (
     append_kline_bars,
     compute_locked_intraday_indicators,
     compute_vwap,
+    is_rt_data_session_fresh,
     normalize_kline_frame,
+    session_vwap_from_klines,
 )
+from futu_ai_quant.market.session import market_of_code, session_date_prefix
 from futu_ai_quant.notify.bark import (
     bark_is_configured,
     bark_notify_warning,
@@ -119,6 +123,8 @@ class IntradayTMonitor:
         self._forming_time_key: str | None = None
         self._current_price: float | None = None
         self._vwap: float | None = None
+        self._last_rt_at = 0.0
+        self._last_fallback_at = 0.0
         self._last_status_at = 0.0
         self._last_eval_at = 0.0
         self._last_warning_at = 0.0
@@ -159,6 +165,7 @@ class IntradayTMonitor:
         with self._lock:
             self._kline_df = kline
             self._refresh_locked_indicators(reason="历史预热")
+            self._sync_price_vwap_from_klines_unlocked()
 
         log_intraday_t(
             f"K 线预热就绪：{source} | 已收盘 {max(len(self._kline_df) - 1, 0)} 根用于锁定指标"
@@ -183,10 +190,50 @@ class IntradayTMonitor:
             f"已订阅 {self.code} | RT_DATA=秒级现价/VWAP | K_5M=5分钟收盘锁定指标"
         )
 
+    def _session_date(self) -> str:
+        return session_date_prefix(market_of_code(self.code))
+
+    def _rt_data_is_live(self) -> bool:
+        return (time.time() - self._last_rt_at) < 15.0
+
+    def _sync_price_vwap_from_klines_unlocked(self) -> None:
+        """调用方已持有 _lock。"""
+        if self._kline_df.empty:
+            return
+        close = safe_float(self._kline_df.iloc[-1].get("close"))
+        if close is not None:
+            self._current_price = close
+        vwap = session_vwap_from_klines(self._kline_df, self._session_date())
+        if vwap is not None:
+            self._vwap = vwap
+
+    def refresh_quote_fallback(self) -> None:
+        """
+        RT_DATA 缺失或推送昨收价时，用快照 + K 线兜底现价/VWAP。
+
+        OpenD 对部分港股标的的 RT_DATA 可能只推一次陈旧昨收，不能作为唯一现价来源。
+        """
+        now = time.time()
+        if self._rt_data_is_live() and self._current_price is not None:
+            return
+        if (now - self._last_fallback_at) < 2.0:
+            return
+
+        snapshot = fetch_snapshot_map(self.quote_ctx, [self.code]).get(self.code, {})
+        price = safe_float(snapshot.get("last_price")) or safe_float(snapshot.get("cur_price"))
+
+        with self._lock:
+            self._last_fallback_at = now
+            if not self._rt_data_is_live():
+                self._sync_price_vwap_from_klines_unlocked()
+            if price is not None and not self._rt_data_is_live():
+                self._current_price = price
+
     def on_rt_data(self, frame: pd.DataFrame) -> None:
         """秒级路径：用推送现价对比已锁定的 RSI / BOLL。"""
         try:
             row = frame.iloc[-1]
+            rt_time = str(row.get("time", ""))
             price = safe_float(row.get("cur_price"))
             turnover = safe_float(row.get("turnover"))
             volume = safe_float(row.get("volume"))
@@ -194,10 +241,12 @@ class IntradayTMonitor:
 
             events: list[SignalEvent] = []
             with self._lock:
-                if price is not None:
-                    self._current_price = price
-                if vwap is not None:
-                    self._vwap = vwap
+                if is_rt_data_session_fresh(rt_time, self._session_date()):
+                    if price is not None:
+                        self._current_price = price
+                    if vwap is not None:
+                        self._vwap = vwap
+                    self._last_rt_at = time.time()
                 events = self._evaluate_locked()
 
             self._emit_events(events)
@@ -233,6 +282,9 @@ class IntradayTMonitor:
                     events = self._evaluate_locked()
                 else:
                     self._forming_time_key = pushed_time_key
+
+                if not self._rt_data_is_live():
+                    self._sync_price_vwap_from_klines_unlocked()
 
             if bar_closed:
                 self._emit_events(events)

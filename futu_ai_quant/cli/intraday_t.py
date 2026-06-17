@@ -358,6 +358,7 @@ def main() -> None:
         market = market_of_code(code)
         while not shutdown:
             if is_trading_session(market):
+                monitor.refresh_quote_fallback()
                 monitor.maybe_print_status()
                 monitor.maybe_eval_tick()
                 time.sleep(1)

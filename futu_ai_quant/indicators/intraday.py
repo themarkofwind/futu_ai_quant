@@ -64,6 +64,13 @@ def compute_vwap(turnover: float | None, volume: float | None) -> float | None:
     return round(turnover / volume, 4)
 
 
+def is_rt_data_session_fresh(rt_time: str | None, session_date: str) -> bool:
+    """RT_DATA 推送时间是否属于当前交易日（过滤 OpenD 偶发的昨收陈旧推送）。"""
+    if not rt_time or not session_date:
+        return False
+    return str(rt_time).strip()[:10] == session_date[:10]
+
+
 def session_vwap_from_klines(frame: pd.DataFrame, session_date: str) -> float | None:
     """按交易日汇总 K 线成交额/成交量，估算日内 VWAP。"""
     work = normalize_kline_frame(frame)

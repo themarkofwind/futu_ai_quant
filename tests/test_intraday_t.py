@@ -10,6 +10,7 @@ from futu_ai_quant.indicators.intraday import (
     compute_intraday_indicators,
     compute_locked_intraday_indicators,
     compute_vwap,
+    is_rt_data_session_fresh,
 )
 from futu_ai_quant.strategy.intraday_t import (
     IntradayTContext,
@@ -238,3 +239,11 @@ class TestIntradayTStateMachine:
         assert not any(e.kind == SignalKind.SELL for e in events)
         assert not any(e.kind == SignalKind.WARNING for e in events)
         assert ctx.state == IntradayTState.SHORT_T
+
+
+class TestRtDataFreshness:
+    def test_accepts_same_session(self) -> None:
+        assert is_rt_data_session_fresh("2026-06-17 10:08:00", "2026-06-17")
+
+    def test_rejects_previous_session(self) -> None:
+        assert not is_rt_data_session_fresh("2026-06-16 16:00:00", "2026-06-17")
