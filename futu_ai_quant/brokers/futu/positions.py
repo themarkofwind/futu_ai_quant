@@ -14,25 +14,41 @@ import os
 import pandas as pd
 from futu import RET_OK, OpenSecTradeContext, TrdEnv, TrdMarket
 
+from futu_ai_quant.market.session import market_of_code
 from futu_ai_quant.utils.logging import log
 from futu_ai_quant.utils.retry import retry_call
 
 
-def get_position_list(trade_ctx: OpenSecTradeContext) -> tuple[int, pd.DataFrame | str]:
-    """
-    查询港股实盘持仓列表。
+def trd_market_for_code(code: str) -> TrdMarket:
+    """按标的代码映射 Futu 交易市场。"""
+    return TrdMarket.US if market_of_code(code) == "US" else TrdMarket.HK
 
-    Futu API: ``position_list_query(trd_env=REAL, position_market=HK)``
 
-    Returns (ret_code, DataFrame | error_msg)。
+def get_position_list(
+    trade_ctx: OpenSecTradeContext,
+    *,
+    market: str | TrdMarket | None = None,
+) -> tuple[int, pd.DataFrame | str]:
     """
+    查询实盘持仓列表。
+
+    ``market`` 可为 ``HK`` / ``US`` 或 ``TrdMarket``；默认港股。
+    """
+    if isinstance(market, str):
+        position_market = TrdMarket.US if market.upper() == "US" else TrdMarket.HK
+    elif market is not None:
+        position_market = market
+    else:
+        position_market = TrdMarket.HK
+
+    label = "美股持仓查询" if position_market == TrdMarket.US else "港股持仓查询"
     return retry_call(
         lambda: trade_ctx.position_list_query(
             trd_env=TrdEnv.REAL,
-            position_market=TrdMarket.HK,
+            position_market=position_market,
             refresh_cache=True,
         ),
-        label="持仓查询",
+        label=label,
         expect_ret_ok=True,
     )
 

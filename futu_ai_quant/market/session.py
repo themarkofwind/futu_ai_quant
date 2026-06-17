@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from futu_ai_quant.config.settings import (
     ANALYSIS_INTERVAL_SEC,
@@ -10,6 +11,8 @@ from futu_ai_quant.config.settings import (
     VOLUME_CONFIRM_RATIO,
     VOLUME_FILTER,
 )
+
+_US_EASTERN = ZoneInfo("America/New_York")
 
 
 def is_hk_trading_session(now: datetime | None = None) -> bool:
@@ -21,6 +24,64 @@ def is_hk_trading_session(now: datetime | None = None) -> bool:
     morning = (9 * 60 + 30) <= minutes < (12 * 60)
     afternoon = (13 * 60) <= minutes < (16 * 60)
     return morning or afternoon
+
+
+def is_us_trading_session(now: datetime | None = None) -> bool:
+    """
+    美股常规交易时段：周一至五 09:30-16:00（美东时间，自动含夏令时）。
+
+    参数 ``now`` 语义：
+    - None：取当前美东时间
+    - 带时区：自动换算到美东
+    - 不带时区：按已是美东时间处理
+    """
+    if now is None:
+        now = datetime.now(_US_EASTERN)
+    elif now.tzinfo is not None:
+        now = now.astimezone(_US_EASTERN)
+    if now.weekday() >= 5:
+        return False
+    minutes = now.hour * 60 + now.minute
+    return (9 * 60 + 30) <= minutes < (16 * 60)
+
+
+def market_of_code(code: str) -> str:
+    """根据标的代码前缀推断市场：返回 'US' 或 'HK'（默认）。"""
+    prefix = code.split(".", 1)[0].upper() if "." in code else ""
+    if prefix == "US":
+        return "US"
+    return "HK"
+
+
+def currency_of_market(market: str) -> str:
+    """按市场返回报价货币标签。"""
+    if market.upper() == "US":
+        return "USD"
+    return "HKD"
+
+
+def session_date_prefix(market: str, now: datetime | None = None) -> str:
+    """当前交易日日期前缀（用于过滤日内 K 线）。"""
+    if market.upper() == "US":
+        if now is None:
+            dt = datetime.now(_US_EASTERN)
+        elif now.tzinfo is not None:
+            dt = now.astimezone(_US_EASTERN)
+        else:
+            dt = now
+        return dt.strftime("%Y-%m-%d")
+
+    dt = now or datetime.now()
+    if now and now.tzinfo is not None:
+        dt = now.astimezone(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    return dt.strftime("%Y-%m-%d")
+
+
+def is_trading_session(market: str, now: datetime | None = None) -> bool:
+    """按市场分发交易时段判断。"""
+    if market.upper() == "US":
+        return is_us_trading_session(now)
+    return is_hk_trading_session(now)
 
 
 def hk_session_volume_fraction(now: datetime | None = None) -> float:

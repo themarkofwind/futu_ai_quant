@@ -4,10 +4,15 @@ from datetime import datetime
 
 import pytest
 
+from datetime import timedelta, timezone
+
 from futu_ai_quant.market.session import (
     evaluate_volume_confirmed,
     hk_session_volume_fraction,
     is_hk_trading_session,
+    is_trading_session,
+    is_us_trading_session,
+    market_of_code,
     resolve_analysis_interval,
 )
 from futu_ai_quant.strategy.profile import build_swing_strategy_profile, classify_loss_tier
@@ -81,6 +86,34 @@ class TestMarketSession:
     def test_morning_session(self) -> None:
         morning = datetime(2026, 6, 15, 10, 30, 0)
         assert is_hk_trading_session(morning) is True
+
+    def test_us_session_naive_eastern(self) -> None:
+        # 周一 10:00 美东（按已是美东时间处理）
+        assert is_us_trading_session(datetime(2026, 6, 15, 10, 0, 0)) is True
+        # 周一 08:00 美东（盘前）
+        assert is_us_trading_session(datetime(2026, 6, 15, 8, 0, 0)) is False
+        # 周六
+        assert is_us_trading_session(datetime(2026, 6, 13, 10, 0, 0)) is False
+
+    def test_us_session_dst_summer_beijing(self) -> None:
+        beijing_tz = timezone(timedelta(hours=8))
+        # 夏令时：北京时间周二 22:00 == 美东周二 10:00（开盘中）
+        beijing = datetime(2026, 6, 16, 22, 0, 0, tzinfo=beijing_tz)
+        assert is_us_trading_session(beijing) is True
+        # 北京时间周二 21:00 == 美东 09:00（尚未开盘）
+        beijing_pre = datetime(2026, 6, 16, 21, 0, 0, tzinfo=beijing_tz)
+        assert is_us_trading_session(beijing_pre) is False
+
+    def test_market_of_code(self) -> None:
+        assert market_of_code("US.AAPL") == "US"
+        assert market_of_code("HK.09988") == "HK"
+        assert market_of_code("09988") == "HK"
+
+    def test_is_trading_session_dispatch(self) -> None:
+        morning_hk = datetime(2026, 6, 15, 10, 30, 0)
+        assert is_trading_session("HK", morning_hk) is True
+        us_open = datetime(2026, 6, 15, 10, 0, 0)
+        assert is_trading_session("US", us_open) is True
 
     def test_volume_session_fraction_midday(self) -> None:
         noon = datetime(2026, 6, 15, 12, 30, 0)

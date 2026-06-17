@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS 后台常驻示例（launchd）
+
+  使用前请修改：
+  1. 下方路径中的用户名 / 项目目录
+  2. --code 等参数
+  3. 确保 .env 已配置 Futu OpenD 与 BARK_DEVICE_KEY
+
+  安装：
+    mkdir -p ~/Personal/futu_ai_quant/data/logs
+    cp scripts/com.futu.intraday-t.plist.example ~/Library/LaunchAgents/com.futu.intraday-t.plist
+    # 编辑 plist 中的路径后执行：
+    launchctl load ~/Library/LaunchAgents/com.futu.intraday-t.plist
+
+  查看状态：
+    launchctl list | grep intraday
+
+  停止并卸载：
+    launchctl unload ~/Library/LaunchAgents/com.futu.intraday-t.plist
+
+  日志：
+    tail -f ~/Personal/futu_ai_quant/data/logs/intraday_t.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.futu.intraday-t</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/xuzha/Personal/futu_ai_quant/.venv/bin/futu-intraday-t</string>
+        <string>--code</string>
+        <string>HK.09988</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/xuzha/Personal/futu_ai_quant</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/xuzha/Personal/futu_ai_quant/data/logs/intraday_t.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/xuzha/Personal/futu_ai_quant/data/logs/intraday_t.err.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>

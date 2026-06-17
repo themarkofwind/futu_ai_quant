@@ -59,6 +59,19 @@ class TestLotSizing:
         assert qty == 0
         assert note is not None
 
+    def test_calc_full_lot_jiangtong_50pct(self) -> None:
+        """江铜：2000 股、每手 1000、50% → 1 手。"""
+        qty, lots, note = calc_full_lot_trade_qty(
+            holding_qty=2000,
+            tradable_qty=2000,
+            lot_size=1000,
+            max_pct=50,
+            for_sell=True,
+        )
+        assert qty == 1000
+        assert lots == 1
+        assert note is None
+
     def test_calc_full_lot_min_one_lot_when_two_lots_held(self) -> None:
         """江铜场景：2000 股、每手 1000、20% 折算 400 股 → 卖 1 手。"""
         qty, lots, note = calc_full_lot_trade_qty(
