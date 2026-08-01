@@ -46,6 +46,28 @@ def attach_watch_triggers(
     tier = str(swing_strategy.get("loss_tier") or "moderate_loss")
     watches: list[dict[str, Any]] = []
 
+    if tier == "watchlist":
+        buy_low, buy_high = _buy_swing_band(market_price, atr_market)
+        sell_low, sell_high = _sell_swing_band(market_price, atr_market)
+        watches.append(
+            {
+                "side": "buy",
+                "price_low": buy_low,
+                "price_high": buy_high,
+                "note": "回调至此区间可考虑买入/回补",
+            }
+        )
+        watches.append(
+            {
+                "side": "sell",
+                "price_low": sell_low,
+                "price_high": sell_high,
+                "note": "反弹至此区间可考虑卖出/做空",
+            }
+        )
+        plan["watch_triggers"] = watches
+        return
+
     if tier in ("moderate_loss", "deep_loss"):
         low, high = _buy_swing_band(market_price, atr_market)
         watches.append(
@@ -79,7 +101,13 @@ def format_watch_triggers(plan: dict[str, Any]) -> str:
         high = item.get("price_high")
         if low is None or high is None:
             continue
-        label = "反弹" if item.get("side") == "sell" else "回调"
+        side = item.get("side")
+        if side == "sell":
+            label = "卖出参考"
+        elif side == "buy":
+            label = "买入参考"
+        else:
+            label = "参考"
         note = str(item.get("note") or "").strip()
         chunk = f"{label} {low}-{high}"
         if note:
@@ -168,7 +196,10 @@ def build_stock_trade_plan(
         "lot_confirmed": lot_confirmed,
     }
 
-    if not lot_confirmed:
+    if not lot_confirmed and not (
+        str(stock.get("position_type") or "") == "WATCHLIST"
+        or str(swing_strategy.get("loss_tier") or "") == "watchlist"
+    ):
         plan["trade_note"] = "每手股数未从行情确认，暂不生成交易数量"
         apply_data_quality_to_trade_plan(plan, stock)
         return plan
@@ -191,6 +222,47 @@ def build_stock_trade_plan(
             low, high = _buy_swing_band(market_price, atr_market)
             plan["trigger_price_low"] = low
             plan["trigger_price_high"] = high
+
+    is_watchlist = str(stock.get("position_type") or "") == "WATCHLIST" or (
+        str(swing_strategy.get("loss_tier") or "") == "watchlist"
+    )
+
+    if is_watchlist and market_price is not None:
+        # 自选：不按持仓数量下单，只给方向 + 股价区间
+        if signal == "SELL_SWING":
+            plan["direction"] = "sell"
+            plan["trade_note"] = (
+                f"技术面提示卖出/做空，参考区间 "
+                f"{plan.get('trigger_price_low')}-{plan.get('trigger_price_high')}"
+            )
+            attach_watch_triggers(
+                plan,
+                swing_strategy,
+                market_price=market_price,
+                atr_market=atr_market,
+            )
+        elif signal == "BUY_SWING":
+            plan["direction"] = "buy"
+            plan["trade_note"] = (
+                f"技术面提示买入/回补，参考区间 "
+                f"{plan.get('trigger_price_low')}-{plan.get('trigger_price_high')}"
+            )
+            attach_watch_triggers(
+                plan,
+                swing_strategy,
+                market_price=market_price,
+                atr_market=atr_market,
+            )
+        elif signal in ("HOLD", "WAIT"):
+            attach_watch_triggers(
+                plan,
+                swing_strategy,
+                market_price=market_price,
+                atr_market=atr_market,
+            )
+            plan["trade_note"] = "暂无明确方向，附买入/卖出参考价"
+        apply_data_quality_to_trade_plan(plan, stock)
+        return plan
 
     if signal == "SELL_SWING" and can_sell >= lot_size:
         suggested_qty, suggested_lots, note = calc_full_lot_trade_qty(

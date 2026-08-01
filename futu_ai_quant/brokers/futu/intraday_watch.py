@@ -10,13 +10,13 @@ from futu import RET_OK, OpenQuoteContext, SubType
 
 from futu_ai_quant.brokers.futu.intraday_kline import fetch_intraday_5m_klines
 from futu_ai_quant.brokers.futu.intraday_monitor import log_intraday_t
+from futu_ai_quant.brokers.futu.market_state import FutuMarketSessionGate
 from futu_ai_quant.indicators.intraday import (
     compute_locked_intraday_indicators,
     session_vwap_from_klines,
 )
 from futu_ai_quant.market.session import (
     currency_of_market,
-    is_trading_session,
     market_of_code,
     session_date_prefix,
 )
@@ -26,18 +26,13 @@ from futu_ai_quant.notify.bark import (
     bark_title_for_signal,
     send_bark_async,
 )
+from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.strategy.intraday_t import (
     IntradayTContext,
     SignalEvent,
     SignalKind,
     build_status_message,
     evaluate_intraday_t,
-)
-from futu_ai_quant.strategy.intraday_t_settings import (
-    INTRADAY_T_LOT_SIZE,
-    INTRADAY_T_POLL_SEC,
-    INTRADAY_T_STATUS_INTERVAL_SEC,
-    INTRADAY_T_TARGET_SPREAD,
 )
 from futu_ai_quant.utils.numbers import safe_float
 from futu_ai_quant.utils.retry import retry_call
@@ -69,31 +64,102 @@ class IntradayTWatch:
         quote_ctx: OpenQuoteContext,
         codes: list[str],
         *,
-        poll_sec: int = INTRADAY_T_POLL_SEC,
-        status_interval_sec: int = INTRADAY_T_STATUS_INTERVAL_SEC,
-        lot_size: int = INTRADAY_T_LOT_SIZE,
-        target_spread: float = INTRADAY_T_TARGET_SPREAD,
+        poll_sec: int | None = None,
+        status_interval_sec: int | None = None,
+        lot_size: int | None = None,
+        target_spread: float | None = None,
         lot_by_code: dict[str, int] | None = None,
         target_by_code: dict[str, float] | None = None,
+        session_gate: FutuMarketSessionGate | None = None,
     ) -> None:
         self.quote_ctx = quote_ctx
-        self.poll_sec = poll_sec
-        self.status_interval_sec = status_interval_sec
-        lot_map = lot_by_code or {}
-        spread_map = target_by_code or {}
+        self.session_gate = session_gate or FutuMarketSessionGate(quote_ctx)
+        self.poll_sec = its.INTRADAY_T_POLL_SEC if poll_sec is None else poll_sec
+        self.status_interval_sec = (
+            its.INTRADAY_T_STATUS_INTERVAL_SEC
+            if status_interval_sec is None
+            else status_interval_sec
+        )
+        self._default_lot = its.INTRADAY_T_LOT_SIZE if lot_size is None else lot_size
+        self._default_spread = (
+            its.INTRADAY_T_TARGET_SPREAD if target_spread is None else target_spread
+        )
+        self._lot_by_code = dict(lot_by_code or {})
+        self._target_by_code = dict(target_by_code or {})
+        self._freeze_poll = poll_sec is not None
+        self._freeze_status = status_interval_sec is not None
         self.symbols = [
-            WatchedSymbol(
-                code=code,
-                market=market_of_code(code),
-                currency=currency_of_market(market_of_code(code)),
-                ctx=IntradayTContext(
-                    lot_size=lot_map.get(code, lot_size),
-                    target_spread=spread_map.get(code, target_spread),
-                    currency=currency_of_market(market_of_code(code)),
-                ),
-            )
-            for code in codes
+            self._make_symbol(code) for code in codes
         ]
+
+    def _make_symbol(self, code: str) -> WatchedSymbol:
+        market = market_of_code(code)
+        return WatchedSymbol(
+            code=code,
+            market=market,
+            currency=currency_of_market(market),
+            ctx=IntradayTContext(
+                lot_size=self._lot_by_code.get(code, self._default_lot),
+                target_spread=self._target_by_code.get(code, self._default_spread),
+                currency=currency_of_market(market),
+            ),
+        )
+
+    def apply_hot_config(
+        self,
+        *,
+        codes: list[str] | None = None,
+        poll_sec: int | None = None,
+        status_interval_sec: int | None = None,
+        lot_by_code: dict[str, int] | None = None,
+        target_by_code: dict[str, float] | None = None,
+    ) -> list[str]:
+        """热加载轮询参数；若 codes 变化则增删标的并重新订阅。"""
+        notes: list[str] = []
+        if lot_by_code is not None:
+            self._lot_by_code.update(lot_by_code)
+        if target_by_code is not None:
+            self._target_by_code.update(target_by_code)
+
+        if not self._freeze_poll:
+            value = its.INTRADAY_T_POLL_SEC if poll_sec is None else poll_sec
+            if value != self.poll_sec:
+                notes.append(f"poll_sec {self.poll_sec}→{value}")
+                self.poll_sec = value
+        if not self._freeze_status:
+            value = (
+                its.INTRADAY_T_STATUS_INTERVAL_SEC
+                if status_interval_sec is None
+                else status_interval_sec
+            )
+            if value != self.status_interval_sec:
+                notes.append(f"status_interval {self.status_interval_sec}→{value}")
+                self.status_interval_sec = value
+
+        for sym in self.symbols:
+            lot = self._lot_by_code.get(sym.code)
+            if lot is not None and lot != sym.ctx.lot_size:
+                notes.append(f"{sym.code} lot {sym.ctx.lot_size}→{lot}")
+                sym.ctx.lot_size = lot
+            spread = self._target_by_code.get(sym.code)
+            if spread is not None and spread != sym.ctx.target_spread:
+                notes.append(f"{sym.code} spread {sym.ctx.target_spread}→{spread}")
+                sym.ctx.target_spread = spread
+
+        if codes is not None:
+            desired = list(dict.fromkeys(codes))
+            current = [sym.code for sym in self.symbols]
+            if desired != current:
+                notes.append(f"codes {current}→{desired}")
+                kept = {sym.code: sym for sym in self.symbols}
+                self.symbols = []
+                for code in desired:
+                    if code in kept:
+                        self.symbols.append(kept[code])
+                    else:
+                        self.symbols.append(self._make_symbol(code))
+                self.subscribe_klines()
+        return notes
 
     def check_connection(self) -> None:
         ret, state = retry_call(
@@ -106,10 +172,21 @@ class IntradayTWatch:
         log_intraday_t(f"OpenD 已连接 | 市场状态: {state}")
 
     def any_market_open(self) -> bool:
-        return any(is_trading_session(sym.market) for sym in self.symbols)
+        return self.session_gate.any_continuous_trading([sym.code for sym in self.symbols])
 
     def open_symbols(self) -> list[WatchedSymbol]:
-        return [sym for sym in self.symbols if is_trading_session(sym.market)]
+        states = self.session_gate.fetch_states([sym.code for sym in self.symbols])
+        from futu_ai_quant.brokers.futu.market_state import is_continuous_market_state
+
+        open_list: list[WatchedSymbol] = []
+        for sym in self.symbols:
+            state = states.get(sym.code)
+            if state:
+                if is_continuous_market_state(state):
+                    open_list.append(sym)
+            elif self.session_gate.is_continuous_trading(sym.code):
+                open_list.append(sym)
+        return open_list
 
     def log_startup_banner(self) -> None:
         codes = ", ".join(sym.code for sym in self.symbols)
@@ -118,7 +195,8 @@ class IntradayTWatch:
             f"多标的轮询启动 | 标的={codes} | 市场={markets} | "
             f"轮询间隔={self.poll_sec}s | 单次={self.symbols[0].ctx.lot_size} 股 | "
             f"目标净价差>={self.symbols[0].ctx.target_spread} | "
-            f"Bark={'开启' if bark_is_configured() else '关闭'}"
+            f"Bark={'开启' if bark_is_configured() else '关闭'} | "
+            f"执行门禁=OpenD market_state(MORNING/AFTERNOON)"
         )
 
     def subscribe_klines(self) -> None:
@@ -140,9 +218,7 @@ class IntradayTWatch:
     def poll_once(self) -> int:
         """轮询一轮，返回本轮实际处理的标的数。"""
         processed = 0
-        for sym in self.symbols:
-            if not is_trading_session(sym.market):
-                continue
+        for sym in self.open_symbols():
             self._poll_symbol(sym)
             processed += 1
         return processed
@@ -206,7 +282,12 @@ class IntradayTWatch:
     ) -> None:
         if not bark_is_configured():
             return
-        notify_kinds = {SignalKind.SELL, SignalKind.BUY_BACK}
+        notify_kinds = {
+            SignalKind.SELL,
+            SignalKind.BUY_T,
+            SignalKind.BUY_BACK,
+            SignalKind.SELL_OFF,
+        }
         if bark_notify_warning():
             notify_kinds.add(SignalKind.WARNING)
         if event.kind not in notify_kinds:

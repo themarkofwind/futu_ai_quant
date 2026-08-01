@@ -30,8 +30,10 @@ from futu import OpenQuoteContext, OpenSecTradeContext, RET_OK, SubType
 from futu_ai_quant.brokers.futu.intraday_kline import fetch_intraday_5m_klines
 from futu_ai_quant.brokers.futu.intraday_monitor import IntradayTMonitor, log_intraday_t
 from futu_ai_quant.brokers.futu.positions import maybe_unlock_trade, trd_market_for_code
+from futu_ai_quant.config.env_reload import EnvReloader, format_settings_changes
 from futu_ai_quant.market.codes import normalize_stock_code
-from futu_ai_quant.market.session import currency_of_market, is_trading_session, market_of_code
+from futu_ai_quant.market.intraday_session_gate import wait_for_trading_session
+from futu_ai_quant.market.session import currency_of_market, market_of_code
 from futu_ai_quant.notify.bark import (
     bark_is_configured,
     bark_notify_warning,
@@ -39,20 +41,11 @@ from futu_ai_quant.notify.bark import (
     send_bark,
     send_bark_async,
 )
+from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.strategy.intraday_t import IntradayTContext, SignalKind
 from futu_ai_quant.strategy.intraday_t_cost import resolve_intraday_t_target_spread
 from futu_ai_quant.strategy.intraday_t_lot import resolve_intraday_t_lot_size
 from futu_ai_quant.strategy.intraday_t_replay import latest_trading_day, replay_intraday_t
-from futu_ai_quant.strategy.intraday_t_settings import (
-    INTRADAY_T_CODE,
-    INTRADAY_T_EVAL_TICK_SEC,
-    INTRADAY_T_LOT_PCT,
-    INTRADAY_T_LOT_SIZE,
-    INTRADAY_T_MIN_PROFIT_COST_RATIO,
-    INTRADAY_T_STATUS_INTERVAL_SEC,
-    INTRADAY_T_TARGET_SPREAD,
-    INTRADAY_T_TARGET_SPREAD_AUTO,
-)
 from futu_ai_quant.utils.logging import log
 from futu_ai_quant.utils.retry import retry_call
 
@@ -63,32 +56,32 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--code",
-        default=INTRADAY_T_CODE,
-        help=f"标的代码（默认 {INTRADAY_T_CODE}）",
+        default=None,
+        help=f"标的代码（默认 {its.INTRADAY_T_CODE}，可由 .env 热加载）",
     )
     parser.add_argument(
         "--lot-size",
         type=int,
         default=None,
-        help=f"固定做 T 股数（指定则忽略持仓比例；未指定则按 INTRADAY_T_LOT_PCT 自动折算）",
+        help="固定做 T 股数（指定则忽略持仓比例与热加载股数）",
     )
     parser.add_argument(
         "--lot-pct",
         type=float,
         default=None,
-        help=f"做 T 占持仓比例 %%（默认 {INTRADAY_T_LOT_PCT:g}，0=用固定 INTRADAY_T_LOT_SIZE）",
+        help=f"做 T 占持仓比例 %%（默认 {its.INTRADAY_T_LOT_PCT:g}，0=用固定 INTRADAY_T_LOT_SIZE）",
     )
     parser.add_argument(
         "--target-spread",
         type=float,
         default=None,
-        help=f"目标净价差下限（默认 {INTRADAY_T_TARGET_SPREAD}，并与费用估算取较大值）",
+        help=f"目标净价差下限（默认 {its.INTRADAY_T_TARGET_SPREAD}，并与费用估算取较大值）",
     )
     parser.add_argument(
         "--min-profit-cost-ratio",
         type=float,
         default=None,
-        help=f"目标价差相对往返费用的安全系数（默认 {INTRADAY_T_MIN_PROFIT_COST_RATIO:g}）",
+        help=f"目标价差相对往返费用的安全系数（默认 {its.INTRADAY_T_MIN_PROFIT_COST_RATIO:g}）",
     )
     parser.add_argument(
         "--no-spread-auto",
@@ -98,14 +91,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--status-interval",
         type=int,
-        default=INTRADAY_T_STATUS_INTERVAL_SEC,
-        help=f"心跳日志间隔秒（默认 {INTRADAY_T_STATUS_INTERVAL_SEC}）",
+        default=None,
+        help=f"心跳日志间隔秒（默认 {its.INTRADAY_T_STATUS_INTERVAL_SEC}）",
     )
     parser.add_argument(
         "--eval-tick",
         type=float,
-        default=INTRADAY_T_EVAL_TICK_SEC,
-        help=f"本地补帧评估节拍秒（0=关闭，默认 {INTRADAY_T_EVAL_TICK_SEC:g}）",
+        default=None,
+        help=f"本地补帧评估节拍秒（0=关闭，默认 {its.INTRADAY_T_EVAL_TICK_SEC:g}）",
     )
     parser.add_argument(
         "--no-bark",
@@ -237,17 +230,17 @@ def _resolve_lot_size(
         log_intraday_t(f"使用固定做T股数 {args.lot_size}（--lot-size）")
         return args.lot_size
 
-    lot_pct = args.lot_pct if args.lot_pct is not None else INTRADAY_T_LOT_PCT
+    lot_pct = args.lot_pct if args.lot_pct is not None else its.INTRADAY_T_LOT_PCT
     if lot_pct <= 0:
-        log_intraday_t(f"使用固定做T股数 {INTRADAY_T_LOT_SIZE}（INTRADAY_T_LOT_PCT=0）")
-        return INTRADAY_T_LOT_SIZE
+        log_intraday_t(f"使用固定做T股数 {its.INTRADAY_T_LOT_SIZE}（INTRADAY_T_LOT_PCT=0）")
+        return its.INTRADAY_T_LOT_SIZE
 
     lot, note = resolve_intraday_t_lot_size(
         quote_ctx,
         trade_ctx,
         code,
         lot_pct=lot_pct,
-        fallback_lot_size=INTRADAY_T_LOT_SIZE,
+        fallback_lot_size=its.INTRADAY_T_LOT_SIZE,
     )
     log_intraday_t(note)
     return lot
@@ -262,12 +255,12 @@ def _resolve_target_spread(
     manual = (
         args.target_spread
         if args.target_spread is not None
-        else INTRADAY_T_TARGET_SPREAD
+        else its.INTRADAY_T_TARGET_SPREAD
     )
     cost_ratio = (
         args.min_profit_cost_ratio
         if args.min_profit_cost_ratio is not None
-        else INTRADAY_T_MIN_PROFIT_COST_RATIO
+        else its.INTRADAY_T_MIN_PROFIT_COST_RATIO
     )
     spread, note = resolve_intraday_t_target_spread(
         quote_ctx,
@@ -275,15 +268,16 @@ def _resolve_target_spread(
         lot_size=lot_size,
         manual_spread=manual,
         cost_ratio=cost_ratio,
-        auto=not args.no_spread_auto and INTRADAY_T_TARGET_SPREAD_AUTO,
+        auto=not args.no_spread_auto and its.INTRADAY_T_TARGET_SPREAD_AUTO,
     )
     log_intraday_t(note)
     return spread
 
 
 def main() -> None:
-    args = parse_args()
     load_dotenv()
+    its.refresh_from_environ()
+    args = parse_args()
 
     if args.no_bark:
         os.environ["BARK_ENABLED"] = "0"
@@ -299,15 +293,16 @@ def main() -> None:
         log_intraday_t(f"Bark 测试推送失败: {msg}")
         sys.exit(1)
 
-    code = normalize_stock_code(args.code)
+    freeze_code = args.code is not None
+    code = normalize_stock_code(args.code or its.INTRADAY_T_CODE)
 
     host = os.getenv("FUTU_OPEND_HOST", "127.0.0.1")
     port = int(os.getenv("FUTU_OPEND_PORT", "11111"))
 
     if args.replay:
         ctx = IntradayTContext(
-            lot_size=args.lot_size or INTRADAY_T_LOT_SIZE,
-            target_spread=args.target_spread or INTRADAY_T_TARGET_SPREAD,
+            lot_size=args.lot_size or its.INTRADAY_T_LOT_SIZE,
+            target_spread=args.target_spread or its.INTRADAY_T_TARGET_SPREAD,
             currency=currency_of_market(market_of_code(code)),
         )
         sys.exit(_run_replay(args, code, ctx))
@@ -355,16 +350,58 @@ def main() -> None:
         monitor.log_startup_banner()
         monitor.maybe_print_status(force=True)
 
+        reloader = EnvReloader()
         market = market_of_code(code)
+
+        def _idle_reload() -> None:
+            changes = reloader.poll()
+            if changes:
+                log_intraday_t(f".env 热加载生效: {format_settings_changes(changes)}")
+
         while not shutdown:
-            if is_trading_session(market):
-                monitor.refresh_quote_fallback()
-                monitor.maybe_print_status()
-                monitor.maybe_eval_tick()
-                time.sleep(1)
-            else:
-                log("做T", f"非{market}交易时段，60 秒后重试...")
-                time.sleep(60)
+            if not monitor.session_gate.is_continuous_trading(code):
+                ok = wait_for_trading_session(
+                    market,
+                    should_stop=lambda: shutdown,
+                    on_idle_tick=_idle_reload,
+                    session_gate=monitor.session_gate,
+                    code=code,
+                    is_open=lambda: monitor.session_gate.is_continuous_trading(
+                        code, force=True
+                    ),
+                )
+                if not ok:
+                    break
+                continue
+
+            changes = reloader.poll()
+            if changes:
+                detail = format_settings_changes(changes)
+                log_intraday_t(f".env 热加载生效: {detail}")
+                if "INTRADAY_T_CODE" in changes and not freeze_code:
+                    old_c, new_c = changes["INTRADAY_T_CODE"]
+                    log_intraday_t(
+                        f"INTRADAY_T_CODE {old_c}→{new_c}：单标的订阅需重启进程才切换标的"
+                    )
+                if args.lot_size is None:
+                    lot_size = _resolve_lot_size(args, quote_ctx, trade_ctx, code)
+                if args.target_spread is None:
+                    target_spread = _resolve_target_spread(
+                        args, quote_ctx, code, lot_size
+                    )
+                notes = monitor.apply_hot_config(
+                    lot_size=None if args.lot_size is not None else lot_size,
+                    target_spread=(
+                        None if args.target_spread is not None else target_spread
+                    ),
+                )
+                if notes:
+                    log_intraday_t("运行参数已更新: " + "; ".join(notes))
+
+            monitor.refresh_quote_fallback()
+            monitor.maybe_print_status()
+            monitor.maybe_eval_tick()
+            time.sleep(1)
     except KeyboardInterrupt:
         shutdown = True
     except Exception as exc:

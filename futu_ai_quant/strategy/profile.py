@@ -59,3 +59,16 @@ def build_swing_strategy_profile(pl_ratio: float | None) -> dict[str, Any]:
         },
     }
     return profiles.get(tier, profiles["unknown"])
+
+
+def build_watchlist_strategy_profile() -> dict[str, Any]:
+    """自选观察：不按持仓盈亏分层，日K为主给出买卖参考。"""
+    return {
+        "loss_tier": "watchlist",
+        "primary_timeframe": "daily",
+        "secondary_timeframe": "weekly",
+        "guidance": "自选观察：日K为主、周K确认，输出买卖参考价，不涉及个人持仓",
+        "max_swing_position_pct": 20,
+        "prefer_sell_call": False,
+        "allow_sell_put": False,
+    }

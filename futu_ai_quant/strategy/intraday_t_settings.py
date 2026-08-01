@@ -1,53 +1,119 @@
-"""日内 T+0 先卖后买监控策略参数（环境变量可覆盖）。"""
+"""日内 T+0 先卖后买监控策略参数（环境变量可覆盖，支持运行中热刷新）。"""
 
 from __future__ import annotations
 
 import os
+from typing import Any
 
-INTRADAY_T_CODE = os.getenv("INTRADAY_T_CODE", "HK.09988")
-# 多标的监控（intraday_watch）：逗号分隔，可港股/美股混合，如 "HK.09988,US.AAPL"
-INTRADAY_T_CODES = os.getenv("INTRADAY_T_CODES", "")
-INTRADAY_T_LOT_SIZE = int(os.getenv("INTRADAY_T_LOT_SIZE", "1000"))
-# 单次做 T 占正股持仓比例（%）；>0 时从 Futu 持仓自动折算整手，0 则用固定 INTRADAY_T_LOT_SIZE
-INTRADAY_T_LOT_PCT = float(os.getenv("INTRADAY_T_LOT_PCT", "30"))
-INTRADAY_T_TARGET_SPREAD = float(os.getenv("INTRADAY_T_TARGET_SPREAD", "1.2"))
-# 1=按手续费自动抬高目标价差下限（与 INTRADAY_T_TARGET_SPREAD 取较大值）
-INTRADAY_T_TARGET_SPREAD_AUTO = os.getenv("INTRADAY_T_TARGET_SPREAD_AUTO", "1").lower() not in (
-    "0",
-    "false",
-    "no",
+# 默认：主力华虹实时；轮询标的腾讯+阿里
+_DEFAULT_CODE = "HK.01347"
+_DEFAULT_CODES = "HK.09988,HK.00700"
+
+
+def _env_str(name: str, default: str) -> str:
+    return os.getenv(name, default).strip() or default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    return int(raw)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    return float(raw)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in ("0", "false", "no")
+
+
+# 模块级可变配置：启动时与热加载时由 refresh_from_environ() 写入
+INTRADAY_T_CODE: str = _DEFAULT_CODE
+INTRADAY_T_CODES: str = _DEFAULT_CODES
+INTRADAY_T_LOT_SIZE: int = 1000
+INTRADAY_T_LOT_PCT: float = 30.0
+INTRADAY_T_TARGET_SPREAD: float = 1.2
+INTRADAY_T_TARGET_SPREAD_AUTO: bool = True
+INTRADAY_T_MIN_PROFIT_COST_RATIO: float = 2.0
+INTRADAY_T_US_COMMISSION_PER_SHARE: float = 0.0049
+INTRADAY_T_US_MIN_COMMISSION: float = 0.99
+INTRADAY_T_US_PLATFORM_FEE: float = 0.0
+INTRADAY_T_POLL_SEC: int = 60
+INTRADAY_T_BOLL_LENGTH: int = 20
+INTRADAY_T_BOLL_STD: float = 2.0
+INTRADAY_T_RSI_LENGTH: int = 14
+INTRADAY_T_RSI_SELL: float = 75.0
+INTRADAY_T_RSI_BUY: float = 35.0
+INTRADAY_T_VWAP_PREMIUM: float = 1.015
+INTRADAY_T_VWAP_DISCOUNT: float = 0.985
+INTRADAY_T_KLINE_WINDOW: int = 120
+INTRADAY_T_HISTORY_BARS: int = 60
+INTRADAY_T_STATUS_INTERVAL_SEC: int = 30
+INTRADAY_T_EVAL_TICK_SEC: float = 2.0
+INTRADAY_T_VOLUME_SURGE_RATIO: float = 2.5
+INTRADAY_T_CONSECUTIVE_ABOVE_BAND: int = 3
+
+
+_SETTING_SPECS: tuple[tuple[str, str, Any, Any], ...] = (
+    # (attr, env_name, caster_kind, default)
+    ("INTRADAY_T_CODE", "INTRADAY_T_CODE", "str", _DEFAULT_CODE),
+    ("INTRADAY_T_CODES", "INTRADAY_T_CODES", "str", _DEFAULT_CODES),
+    ("INTRADAY_T_LOT_SIZE", "INTRADAY_T_LOT_SIZE", "int", 1000),
+    ("INTRADAY_T_LOT_PCT", "INTRADAY_T_LOT_PCT", "float", 30.0),
+    ("INTRADAY_T_TARGET_SPREAD", "INTRADAY_T_TARGET_SPREAD", "float", 1.2),
+    ("INTRADAY_T_TARGET_SPREAD_AUTO", "INTRADAY_T_TARGET_SPREAD_AUTO", "bool", True),
+    ("INTRADAY_T_MIN_PROFIT_COST_RATIO", "INTRADAY_T_MIN_PROFIT_COST_RATIO", "float", 2.0),
+    ("INTRADAY_T_US_COMMISSION_PER_SHARE", "INTRADAY_T_US_COMMISSION_PER_SHARE", "float", 0.0049),
+    ("INTRADAY_T_US_MIN_COMMISSION", "INTRADAY_T_US_MIN_COMMISSION", "float", 0.99),
+    ("INTRADAY_T_US_PLATFORM_FEE", "INTRADAY_T_US_PLATFORM_FEE", "float", 0.0),
+    ("INTRADAY_T_POLL_SEC", "INTRADAY_T_POLL_SEC", "int", 60),
+    ("INTRADAY_T_BOLL_LENGTH", "INTRADAY_T_BOLL_LENGTH", "int", 20),
+    ("INTRADAY_T_BOLL_STD", "INTRADAY_T_BOLL_STD", "float", 2.0),
+    ("INTRADAY_T_RSI_LENGTH", "INTRADAY_T_RSI_LENGTH", "int", 14),
+    ("INTRADAY_T_RSI_SELL", "INTRADAY_T_RSI_SELL", "float", 75.0),
+    ("INTRADAY_T_RSI_BUY", "INTRADAY_T_RSI_BUY", "float", 35.0),
+    ("INTRADAY_T_VWAP_PREMIUM", "INTRADAY_T_VWAP_PREMIUM", "float", 1.015),
+    ("INTRADAY_T_VWAP_DISCOUNT", "INTRADAY_T_VWAP_DISCOUNT", "float", 0.985),
+    ("INTRADAY_T_KLINE_WINDOW", "INTRADAY_T_KLINE_WINDOW", "int", 120),
+    ("INTRADAY_T_HISTORY_BARS", "INTRADAY_T_HISTORY_BARS", "int", 60),
+    ("INTRADAY_T_STATUS_INTERVAL_SEC", "INTRADAY_T_STATUS_INTERVAL_SEC", "int", 30),
+    ("INTRADAY_T_EVAL_TICK_SEC", "INTRADAY_T_EVAL_TICK_SEC", "float", 2.0),
+    ("INTRADAY_T_VOLUME_SURGE_RATIO", "INTRADAY_T_VOLUME_SURGE_RATIO", "float", 2.5),
+    ("INTRADAY_T_CONSECUTIVE_ABOVE_BAND", "INTRADAY_T_CONSECUTIVE_ABOVE_BAND", "int", 3),
 )
-# 目标价差相对往返费用的安全系数（净利建议 ≥ 费用×该倍数）
-INTRADAY_T_MIN_PROFIT_COST_RATIO = float(os.getenv("INTRADAY_T_MIN_PROFIT_COST_RATIO", "2.0"))
-# 美股费用估算（富途常见档位，可按账户实际费率覆盖）
-INTRADAY_T_US_COMMISSION_PER_SHARE = float(os.getenv("INTRADAY_T_US_COMMISSION_PER_SHARE", "0.0049"))
-INTRADAY_T_US_MIN_COMMISSION = float(os.getenv("INTRADAY_T_US_MIN_COMMISSION", "0.99"))
-INTRADAY_T_US_PLATFORM_FEE = float(os.getenv("INTRADAY_T_US_PLATFORM_FEE", "0"))
-# 多标的轮询间隔（秒）：交易时段内每隔该时长拉取一次各标的最新 5 分钟 K 线
-INTRADAY_T_POLL_SEC = int(os.getenv("INTRADAY_T_POLL_SEC", "60"))
 
-INTRADAY_T_BOLL_LENGTH = int(os.getenv("INTRADAY_T_BOLL_LENGTH", "20"))
-INTRADAY_T_BOLL_STD = float(os.getenv("INTRADAY_T_BOLL_STD", "2"))
-INTRADAY_T_RSI_LENGTH = int(os.getenv("INTRADAY_T_RSI_LENGTH", "14"))
-INTRADAY_T_RSI_SELL = float(os.getenv("INTRADAY_T_RSI_SELL", "75"))
-INTRADAY_T_RSI_BUY = float(os.getenv("INTRADAY_T_RSI_BUY", "35"))
-INTRADAY_T_VWAP_PREMIUM = float(os.getenv("INTRADAY_T_VWAP_PREMIUM", "1.015"))
-INTRADAY_T_VWAP_DISCOUNT = float(os.getenv("INTRADAY_T_VWAP_DISCOUNT", "0.985"))
 
-INTRADAY_T_KLINE_WINDOW = int(os.getenv("INTRADAY_T_KLINE_WINDOW", "120"))
-INTRADAY_T_HISTORY_BARS = int(os.getenv("INTRADAY_T_HISTORY_BARS", "60"))
-INTRADAY_T_STATUS_INTERVAL_SEC = int(os.getenv("INTRADAY_T_STATUS_INTERVAL_SEC", "30"))
-# 本地补帧评估节拍：0=关闭；建议 1~3 秒（仅用最近一次 RT_DATA 的 price/vwap，不额外请求 OpenD）
-INTRADAY_T_EVAL_TICK_SEC = float(os.getenv("INTRADAY_T_EVAL_TICK_SEC", "2"))
+def refresh_from_environ() -> dict[str, tuple[Any, Any]]:
+    """
+    从当前 ``os.environ`` 重读全部做 T 参数，写回本模块全局变量。
 
-# 强趋势防御：最新 5 分钟 K 线放量 + 连续 N 根收盘站上布林上轨
-INTRADAY_T_VOLUME_SURGE_RATIO = float(os.getenv("INTRADAY_T_VOLUME_SURGE_RATIO", "2.5"))
-INTRADAY_T_CONSECUTIVE_ABOVE_BAND = int(os.getenv("INTRADAY_T_CONSECUTIVE_ABOVE_BAND", "3"))
+    返回发生变更的键 -> (旧值, 新值)。调用方应在 ``load_dotenv(override=True)`` 之后调用。
+    """
+    g = globals()
+    changes: dict[str, tuple[Any, Any]] = {}
+    for attr, env_name, kind, default in _SETTING_SPECS:
+        old = g[attr]
+        if kind == "str":
+            new = _env_str(env_name, default)
+        elif kind == "int":
+            new = _env_int(env_name, default)
+        elif kind == "float":
+            new = _env_float(env_name, default)
+        else:
+            new = _env_bool(env_name, bool(default))
+        if new != old:
+            changes[attr] = (old, new)
+            g[attr] = new
+    return changes
 
-# Bark 推送（见 notify/bark.py）
-# BARK_ENABLED=1
-# BARK_DEVICE_KEY=your_bark_device_key
-# BARK_SERVER=https://api.day.app
-# BARK_GROUP=日内做T
-# BARK_LEVEL=timeSensitive
-# BARK_NOTIFY_WARNING=0
+
+# 首次导入时按环境初始化（兼容已 export 的变量；.env 需在 CLI 里先 load 再 refresh）
+refresh_from_environ()

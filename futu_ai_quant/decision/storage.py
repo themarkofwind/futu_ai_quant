@@ -30,13 +30,15 @@ def save_portfolio_payload_record(
     required_codes: list[str],
     ts: str | None = None,
     decision_source: str = "deepseek",
+    payloads_dir: Path | None = None,
 ) -> Path:
     """
     保存发给大模型（或规则引擎参考）的完整 portfolio 输入。
 
     写入 ``payload_{ts}.json`` 与 ``latest_payload.json``。
     """
-    PAYLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir = payloads_dir or PAYLOADS_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
     ts = ts or _analysis_timestamp()
     record = {
         "saved_at": datetime.now().isoformat(),
@@ -47,9 +49,9 @@ def save_portfolio_payload_record(
         "portfolio_payload": portfolio_payload,
     }
     text = json.dumps(record, ensure_ascii=False, indent=2)
-    path = PAYLOADS_DIR / f"payload_{ts}.json"
+    path = out_dir / f"payload_{ts}.json"
     atomic_write_text(path, text)
-    atomic_write_text(PAYLOADS_DIR / "latest_payload.json", text)
+    atomic_write_text(out_dir / "latest_payload.json", text)
     return path
 
 
@@ -60,9 +62,11 @@ def save_decision_record(
     payload_summary: dict[str, Any] | None = None,
     payload_path: str | Path | None = None,
     ts: str | None = None,
+    decisions_dir: Path | None = None,
 ) -> Path:
     """保存决策输出；``payload_path`` 关联同轮分析的输入文件。"""
-    DECISIONS_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir = decisions_dir or DECISIONS_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
     ts = ts or _analysis_timestamp()
     record: dict[str, Any] = {
         "saved_at": datetime.now().isoformat(),
@@ -74,9 +78,9 @@ def save_decision_record(
     if payload_path is not None:
         record["payload_path"] = str(payload_path)
     text = json.dumps(record, ensure_ascii=False, indent=2)
-    path = DECISIONS_DIR / f"decision_{ts}.json"
+    path = out_dir / f"decision_{ts}.json"
     atomic_write_text(path, text)
-    atomic_write_text(DECISIONS_DIR / "latest.json", text)
+    atomic_write_text(out_dir / "latest.json", text)
     return path
 
 
@@ -86,6 +90,8 @@ def save_analysis_artifacts(
     *,
     required_codes: list[str],
     decision_source: str = "deepseek",
+    payloads_dir: Path | None = None,
+    decisions_dir: Path | None = None,
 ) -> tuple[Path, Path]:
     """
     同时间戳保存输入与输出，便于对照 review。
@@ -100,6 +106,7 @@ def save_analysis_artifacts(
         required_codes=required_codes,
         ts=ts,
         decision_source=decision_source,
+        payloads_dir=payloads_dir,
     )
     decision_path = save_decision_record(
         decision,
@@ -107,5 +114,6 @@ def save_analysis_artifacts(
         payload_summary=portfolio_payload.get("summary"),
         payload_path=payload_path,
         ts=ts,
+        decisions_dir=decisions_dir,
     )
     return payload_path, decision_path

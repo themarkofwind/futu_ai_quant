@@ -22,7 +22,7 @@ from futu_ai_quant.strategy.intraday_t import (
     build_status_message,
     evaluate_intraday_t,
 )
-from futu_ai_quant.strategy.intraday_t_settings import INTRADAY_T_KLINE_WINDOW
+from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.utils.numbers import safe_float
 
 
@@ -183,7 +183,7 @@ def replay_intraday_t(
         pushed_time_key = str(bar.iloc[-1]["time_key"])
 
         prev_forming = forming_time_key
-        window = append_kline_bars(window, bar, max_rows=INTRADAY_T_KLINE_WINDOW)
+        window = append_kline_bars(window, bar, max_rows=its.INTRADAY_T_KLINE_WINDOW)
 
         if prev_forming is not None and pushed_time_key != prev_forming:
             locked_indicators = compute_locked_intraday_indicators(window)

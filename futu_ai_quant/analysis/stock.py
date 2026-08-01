@@ -19,7 +19,10 @@ from futu_ai_quant.indicators.technical import compute_timeframe_indicators
 from futu_ai_quant.market.lot import resolve_lot_size_detail
 from futu_ai_quant.planning.option import build_option_trade_plan_for_stock
 from futu_ai_quant.planning.stock import build_stock_trade_plan
-from futu_ai_quant.strategy.profile import build_swing_strategy_profile
+from futu_ai_quant.strategy.profile import (
+    build_swing_strategy_profile,
+    build_watchlist_strategy_profile,
+)
 from futu_ai_quant.strategy.signals import resolve_effective_swing_signal
 
 
@@ -36,7 +39,10 @@ def analyze_stock_position(
         "shares_per_lot": lot_size,
         "lot_confirmed": lot_confirmed,
     }
-    swing_strategy = build_swing_strategy_profile(pnl.get("pl_ratio"))
+    if str(stock.get("position_type") or "") == "WATCHLIST":
+        swing_strategy = build_watchlist_strategy_profile()
+    else:
+        swing_strategy = build_swing_strategy_profile(pnl.get("pl_ratio"))
 
     daily = compute_timeframe_indicators(quote_ctx, stock["code"], KLType.K_DAY, KLINE_COUNT)
     weekly = compute_timeframe_indicators(

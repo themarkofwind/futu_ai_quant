@@ -87,6 +87,29 @@ class TestMarketSession:
         morning = datetime(2026, 6, 15, 10, 30, 0)
         assert is_hk_trading_session(morning) is True
 
+    def test_hk_lunch_and_edges(self) -> None:
+        from futu_ai_quant.market.session import next_hk_session_open, seconds_until_hk_session
+
+        # 周一盘前
+        pre = datetime(2026, 6, 15, 9, 0, 0)
+        assert is_hk_trading_session(pre) is False
+        assert next_hk_session_open(pre) == datetime(2026, 6, 15, 9, 30, 0)
+
+        # 午休
+        lunch = datetime(2026, 6, 15, 12, 30, 0)
+        assert is_hk_trading_session(lunch) is False
+        assert next_hk_session_open(lunch) == datetime(2026, 6, 15, 13, 0, 0)
+        assert seconds_until_hk_session(lunch) == 30 * 60
+
+        # 收盘后 → 次日 09:30
+        after = datetime(2026, 6, 15, 16, 0, 0)
+        assert is_hk_trading_session(after) is False
+        assert next_hk_session_open(after) == datetime(2026, 6, 16, 9, 30, 0)
+
+        # 周五收盘后 → 下周一
+        fri = datetime(2026, 6, 12, 17, 0, 0)
+        assert next_hk_session_open(fri) == datetime(2026, 6, 15, 9, 30, 0)
+
     def test_us_session_naive_eastern(self) -> None:
         # 周一 10:00 美东（按已是美东时间处理）
         assert is_us_trading_session(datetime(2026, 6, 15, 10, 0, 0)) is True

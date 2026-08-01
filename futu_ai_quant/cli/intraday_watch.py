@@ -13,7 +13,7 @@
 ----
 ::
 
-    futu-intraday-watch --codes HK.09988,US.AAPL
+    futu-intraday-watch --codes HK.09988,HK.00700
     futu-intraday-watch --codes HK.00700 --poll-sec 30
     futu-intraday-watch --once --codes HK.09988
 """
@@ -32,39 +32,31 @@ from futu import OpenQuoteContext, OpenSecTradeContext
 from futu_ai_quant.brokers.futu.intraday_monitor import log_intraday_t
 from futu_ai_quant.brokers.futu.intraday_watch import IntradayTWatch
 from futu_ai_quant.brokers.futu.positions import maybe_unlock_trade
+from futu_ai_quant.config.env_reload import EnvReloader, format_settings_changes
 from futu_ai_quant.market.codes import parse_stock_codes
+from futu_ai_quant.market.intraday_session_gate import wait_for_any_market_open
 from futu_ai_quant.notify.bark import bark_is_configured, send_bark
+from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.strategy.intraday_t_cost import resolve_intraday_t_target_spread
 from futu_ai_quant.strategy.intraday_t_lot import resolve_lot_sizes_for_codes
-from futu_ai_quant.strategy.intraday_t_settings import (
-    INTRADAY_T_CODE,
-    INTRADAY_T_CODES,
-    INTRADAY_T_LOT_PCT,
-    INTRADAY_T_LOT_SIZE,
-    INTRADAY_T_MIN_PROFIT_COST_RATIO,
-    INTRADAY_T_POLL_SEC,
-    INTRADAY_T_STATUS_INTERVAL_SEC,
-    INTRADAY_T_TARGET_SPREAD,
-    INTRADAY_T_TARGET_SPREAD_AUTO,
-)
 from futu_ai_quant.utils.logging import log
 
 
 def parse_args() -> argparse.Namespace:
-    default_codes = INTRADAY_T_CODES.strip() or INTRADAY_T_CODE
+    default_codes = its.INTRADAY_T_CODES.strip() or its.INTRADAY_T_CODE
     parser = argparse.ArgumentParser(
         description="多标的日内 T+0 轮询监控（港股/美股，BOLL + RSI + VWAP）",
     )
     parser.add_argument(
         "--codes",
-        default=default_codes,
-        help=f"逗号分隔标的（默认 {default_codes}）",
+        default=None,
+        help=f"逗号分隔标的（默认 {default_codes}，可由 .env 热加载）",
     )
     parser.add_argument(
         "--poll-sec",
         type=int,
-        default=INTRADAY_T_POLL_SEC,
-        help=f"交易时段内轮询间隔秒（默认 {INTRADAY_T_POLL_SEC}）",
+        default=None,
+        help=f"交易时段内轮询间隔秒（默认 {its.INTRADAY_T_POLL_SEC}）",
     )
     parser.add_argument(
         "--lot-size",
@@ -76,19 +68,19 @@ def parse_args() -> argparse.Namespace:
         "--lot-pct",
         type=float,
         default=None,
-        help=f"做 T 占持仓比例 %%（默认 {INTRADAY_T_LOT_PCT:g}）",
+        help=f"做 T 占持仓比例 %%（默认 {its.INTRADAY_T_LOT_PCT:g}）",
     )
     parser.add_argument(
         "--target-spread",
         type=float,
         default=None,
-        help=f"目标净价差下限（默认 {INTRADAY_T_TARGET_SPREAD}）",
+        help=f"目标净价差下限（默认 {its.INTRADAY_T_TARGET_SPREAD}）",
     )
     parser.add_argument(
         "--min-profit-cost-ratio",
         type=float,
         default=None,
-        help=f"费用安全系数（默认 {INTRADAY_T_MIN_PROFIT_COST_RATIO:g}）",
+        help=f"费用安全系数（默认 {its.INTRADAY_T_MIN_PROFIT_COST_RATIO:g}）",
     )
     parser.add_argument(
         "--no-spread-auto",
@@ -98,8 +90,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--status-interval",
         type=int,
-        default=INTRADAY_T_STATUS_INTERVAL_SEC,
-        help=f"心跳日志间隔秒（默认 {INTRADAY_T_STATUS_INTERVAL_SEC}）",
+        default=None,
+        help=f"心跳日志间隔秒（默认 {its.INTRADAY_T_STATUS_INTERVAL_SEC}）",
     )
     parser.add_argument(
         "--no-bark",
@@ -119,9 +111,76 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _resolve_codes(args: argparse.Namespace) -> list[str]:
+    raw = args.codes if args.codes is not None else (
+        its.INTRADAY_T_CODES.strip() or its.INTRADAY_T_CODE
+    )
+    return parse_stock_codes(raw, fallback_single=its.INTRADAY_T_CODE)
+
+
+def _resolve_lots_and_spreads(
+    args: argparse.Namespace,
+    quote_ctx: OpenQuoteContext,
+    trade_ctx: OpenSecTradeContext,
+    codes: list[str],
+    *,
+    log_notes: bool = True,
+) -> tuple[dict[str, int], dict[str, float]]:
+    lot_by_code: dict[str, int] = {}
+    target_by_code: dict[str, float] = {}
+    manual_spread = (
+        args.target_spread
+        if args.target_spread is not None
+        else its.INTRADAY_T_TARGET_SPREAD
+    )
+    cost_ratio = (
+        args.min_profit_cost_ratio
+        if args.min_profit_cost_ratio is not None
+        else its.INTRADAY_T_MIN_PROFIT_COST_RATIO
+    )
+    spread_auto = not args.no_spread_auto and its.INTRADAY_T_TARGET_SPREAD_AUTO
+
+    if args.lot_size is not None and args.lot_size > 0:
+        lot_by_code = {code: args.lot_size for code in codes}
+        if log_notes:
+            log_intraday_t(f"各标的固定做T股数 {args.lot_size}")
+    else:
+        lot_pct = args.lot_pct if args.lot_pct is not None else its.INTRADAY_T_LOT_PCT
+        if lot_pct > 0:
+            resolved = resolve_lot_sizes_for_codes(
+                quote_ctx,
+                trade_ctx,
+                codes,
+                lot_pct=lot_pct,
+                fallback_lot_size=its.INTRADAY_T_LOT_SIZE,
+            )
+            for code, (lot, note) in resolved.items():
+                lot_by_code[code] = lot
+                if log_notes:
+                    log_intraday_t(f"{code} | {note}")
+        else:
+            lot_by_code = {code: its.INTRADAY_T_LOT_SIZE for code in codes}
+
+    for code in codes:
+        lot = lot_by_code.get(code, its.INTRADAY_T_LOT_SIZE)
+        spread, note = resolve_intraday_t_target_spread(
+            quote_ctx,
+            code,
+            lot_size=lot,
+            manual_spread=manual_spread,
+            cost_ratio=cost_ratio,
+            auto=spread_auto,
+        )
+        target_by_code[code] = spread
+        if log_notes:
+            log_intraday_t(f"{code} | {note}")
+    return lot_by_code, target_by_code
+
+
 def main() -> None:
-    args = parse_args()
     load_dotenv()
+    its.refresh_from_environ()
+    args = parse_args()
 
     if args.no_bark:
         os.environ["BARK_ENABLED"] = "0"
@@ -137,8 +196,9 @@ def main() -> None:
         log_intraday_t(f"Bark 测试推送失败: {msg}")
         sys.exit(1)
 
+    freeze_codes = args.codes is not None
     try:
-        codes = parse_stock_codes(args.codes, fallback_single=INTRADAY_T_CODE)
+        codes = _resolve_codes(args)
     except ValueError as exc:
         log_intraday_t(str(exc))
         sys.exit(1)
@@ -163,59 +223,22 @@ def main() -> None:
         trade_ctx = OpenSecTradeContext(host=host, port=port)
         maybe_unlock_trade(trade_ctx)
 
-        lot_by_code: dict[str, int] = {}
-        target_by_code: dict[str, float] = {}
-        manual_spread = (
-            args.target_spread
-            if args.target_spread is not None
-            else INTRADAY_T_TARGET_SPREAD
+        lot_by_code, target_by_code = _resolve_lots_and_spreads(
+            args, quote_ctx, trade_ctx, codes
         )
-        cost_ratio = (
-            args.min_profit_cost_ratio
-            if args.min_profit_cost_ratio is not None
-            else INTRADAY_T_MIN_PROFIT_COST_RATIO
-        )
-        spread_auto = not args.no_spread_auto and INTRADAY_T_TARGET_SPREAD_AUTO
-
-        if args.lot_size is not None and args.lot_size > 0:
-            lot_by_code = {code: args.lot_size for code in codes}
-            log_intraday_t(f"各标的固定做T股数 {args.lot_size}")
-        else:
-            lot_pct = args.lot_pct if args.lot_pct is not None else INTRADAY_T_LOT_PCT
-            if lot_pct > 0:
-                resolved = resolve_lot_sizes_for_codes(
-                    quote_ctx,
-                    trade_ctx,
-                    codes,
-                    lot_pct=lot_pct,
-                    fallback_lot_size=INTRADAY_T_LOT_SIZE,
-                )
-                for code, (lot, note) in resolved.items():
-                    lot_by_code[code] = lot
-                    log_intraday_t(f"{code} | {note}")
-
-        for code in codes:
-            lot = lot_by_code.get(code, INTRADAY_T_LOT_SIZE)
-            spread, note = resolve_intraday_t_target_spread(
-                quote_ctx,
-                code,
-                lot_size=lot,
-                manual_spread=manual_spread,
-                cost_ratio=cost_ratio,
-                auto=spread_auto,
-            )
-            target_by_code[code] = spread
-            log_intraday_t(f"{code} | {note}")
-
         watch = IntradayTWatch(
             quote_ctx,
             codes,
             poll_sec=args.poll_sec,
             status_interval_sec=args.status_interval,
-            lot_size=INTRADAY_T_LOT_SIZE,
+            lot_size=its.INTRADAY_T_LOT_SIZE,
             lot_by_code=lot_by_code or None,
             target_by_code=target_by_code or None,
-            target_spread=manual_spread,
+            target_spread=(
+                args.target_spread
+                if args.target_spread is not None
+                else its.INTRADAY_T_TARGET_SPREAD
+            ),
         )
         watch.check_connection()
         watch.subscribe_klines()
@@ -229,16 +252,60 @@ def main() -> None:
                 log_intraday_t("当前无标的处于交易时段，跳过轮询")
             return
 
+        reloader = EnvReloader()
+
+        def _apply_reload() -> None:
+            nonlocal codes
+            changes = reloader.poll()
+            if not changes:
+                return
+            detail = format_settings_changes(changes)
+            log_intraday_t(f".env 热加载生效: {detail}")
+            new_codes = codes
+            if not freeze_codes and "INTRADAY_T_CODES" in changes:
+                try:
+                    new_codes = _resolve_codes(args)
+                except ValueError as exc:
+                    log_intraday_t(f"热加载标的失败，保持原列表: {exc}")
+                    new_codes = codes
+            lot_by_code, target_by_code = _resolve_lots_and_spreads(
+                args,
+                quote_ctx,
+                trade_ctx,
+                new_codes,
+                log_notes=False,
+            )
+            notes = watch.apply_hot_config(
+                codes=None if freeze_codes else new_codes,
+                lot_by_code=lot_by_code,
+                target_by_code=target_by_code,
+            )
+            codes = [sym.code for sym in watch.symbols]
+            if notes:
+                log_intraday_t("运行参数已更新: " + "; ".join(notes))
+
         while not shutdown:
-            if watch.any_market_open():
-                open_codes = ", ".join(sym.code for sym in watch.open_symbols())
-                log_intraday_t(f"开始轮询 | 交易中: {open_codes}")
-                watch.poll_once()
-                time.sleep(max(args.poll_sec, 1))
-            else:
-                markets = ", ".join(sorted({sym.market for sym in watch.symbols}))
-                log("做T", f"标的市场 {markets} 均非交易时段，60 秒后重试...")
-                time.sleep(60)
+            if not watch.any_market_open():
+                ok = wait_for_any_market_open(
+                    {sym.market for sym in watch.symbols},
+                    should_stop=lambda: shutdown,
+                    any_open=lambda: watch.session_gate.any_continuous_trading(
+                        [sym.code for sym in watch.symbols],
+                        force=True,
+                    ),
+                    on_idle_tick=_apply_reload,
+                    session_gate=watch.session_gate,
+                    codes=[sym.code for sym in watch.symbols],
+                )
+                if not ok:
+                    break
+                continue
+
+            _apply_reload()
+            open_codes = ", ".join(sym.code for sym in watch.open_symbols())
+            log_intraday_t(f"开始轮询 | 交易中: {open_codes}")
+            watch.poll_once()
+            time.sleep(max(watch.poll_sec, 1))
     except KeyboardInterrupt:
         shutdown = True
     except Exception as exc:

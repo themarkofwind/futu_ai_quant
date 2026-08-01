@@ -6,33 +6,32 @@ import pandas as pd
 from futu import RET_OK, AuType, KLType, OpenQuoteContext
 
 from futu_ai_quant.indicators.intraday import normalize_kline_frame
-from futu_ai_quant.strategy.intraday_t_settings import (
-    INTRADAY_T_BOLL_LENGTH,
-    INTRADAY_T_HISTORY_BARS,
-    INTRADAY_T_KLINE_WINDOW,
-    INTRADAY_T_RSI_LENGTH,
-)
+from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.utils.retry import retry_call
 
 
 def min_indicator_bars() -> int:
-    return max(INTRADAY_T_BOLL_LENGTH, INTRADAY_T_RSI_LENGTH) + 2
+    return max(its.INTRADAY_T_BOLL_LENGTH, its.INTRADAY_T_RSI_LENGTH) + 2
 
 
 def fetch_intraday_5m_klines(
     quote_ctx: OpenQuoteContext,
     code: str,
     *,
-    window: int = INTRADAY_T_KLINE_WINDOW,
-    history_bars: int = INTRADAY_T_HISTORY_BARS,
+    window: int | None = None,
+    history_bars: int | None = None,
     prefer_cur_kline: bool = True,
 ) -> tuple[pd.DataFrame, str]:
     """
     拉取日内 5 分钟 K 线窗口。
 
-  优先 ``get_cur_kline``（需已订阅 K_5M，返回最近交易日数据）；
+    优先 ``get_cur_kline``（需已订阅 K_5M，返回最近交易日数据）；
     不足时回退 ``request_history_kline``。
     """
+    if window is None:
+        window = its.INTRADAY_T_KLINE_WINDOW
+    if history_bars is None:
+        history_bars = its.INTRADAY_T_HISTORY_BARS
     min_bars = min_indicator_bars()
 
     if prefer_cur_kline:

@@ -8,6 +8,7 @@ K 线短期缓存：减少 OpenD ``request_history_kline`` 重复调用。
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -30,7 +31,17 @@ _ROUND_MEMORY: dict[str, tuple[float, pd.DataFrame]] = {}
 
 
 def _timeframe_name(ktype: KLType) -> str:
-    return "daily" if ktype == KLType.K_DAY else "weekly"
+    mapping = {
+        KLType.K_DAY: "daily",
+        KLType.K_WEEK: "weekly",
+        KLType.K_1M: "1m",
+        KLType.K_3M: "3m",
+        KLType.K_5M: "5m",
+        KLType.K_15M: "15m",
+        KLType.K_30M: "30m",
+        KLType.K_60M: "60m",
+    }
+    return mapping.get(ktype, str(ktype))
 
 
 def _caching_enabled_for(ktype: KLType) -> bool:
@@ -38,13 +49,22 @@ def _caching_enabled_for(ktype: KLType) -> bool:
         return False
     if ktype == KLType.K_DAY:
         return KLINE_CACHE_TTL_SEC > 0
-    return KLINE_WEEKLY_CACHE_TTL_SEC > 0
+    if ktype == KLType.K_WEEK:
+        return KLINE_WEEKLY_CACHE_TTL_SEC > 0
+    # 盘中周期：短 TTL 内存+磁盘，避免 12/15 点复用过旧数据
+    return _intraday_cache_ttl_sec() > 0
+
+
+def _intraday_cache_ttl_sec() -> int:
+    return int(os.getenv("KLINE_INTRADAY_CACHE_TTL_SEC", "180"))
 
 
 def _cache_ttl_sec(ktype: KLType) -> int:
     if ktype == KLType.K_WEEK:
         return KLINE_WEEKLY_CACHE_TTL_SEC
-    return KLINE_CACHE_TTL_SEC
+    if ktype == KLType.K_DAY:
+        return KLINE_CACHE_TTL_SEC
+    return _intraday_cache_ttl_sec()
 
 
 def cache_key(code: str, ktype: KLType, max_count: int) -> str:

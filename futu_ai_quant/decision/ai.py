@@ -2,18 +2,20 @@
 LLM 决策生成（多提供商，OpenAI 兼容 API）。
 
 外部 API：``client.chat.completions.create``，JSON mode，最多 2 次补全缺失标的。
+自选观察另走 ``call_watchlist_llm_decision``（更短 prompt + JSON 截断重试）。
 """
 
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from openai import OpenAI
 
 from futu_ai_quant.analysis.portfolio import collect_required_codes
-from futu_ai_quant.analysis.slim import slim_portfolio_for_ai
-from futu_ai_quant.config.prompts import SYSTEM_PROMPT
+from futu_ai_quant.analysis.slim import slim_portfolio_for_ai, slim_watchlist_for_ai
+from futu_ai_quant.config.prompts import SYSTEM_PROMPT, WATCHLIST_SYSTEM_PROMPT
 from futu_ai_quant.decision.validation import find_missing_recommendation_codes
 from futu_ai_quant.llm.settings import (
     llm_max_tokens,
@@ -22,6 +24,38 @@ from futu_ai_quant.llm.settings import (
     resolve_llm_model,
 )
 from futu_ai_quant.utils.logging import log
+
+
+def _strip_code_fence(content: str) -> str:
+    text = content.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
+def parse_llm_json_content(content: str) -> dict[str, Any]:
+    """解析模型 JSON；失败时抛出带上下文的 ValueError。"""
+    text = _strip_code_fence(content)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"LLM JSON 解析失败: {exc.msg} (line {exc.lineno} col {exc.colno}, "
+            f"pos {exc.pos}, content_len={len(text)})"
+        ) from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"LLM JSON 根节点须为对象，实际为 {type(data).__name__}")
+    return data
+
+
+def _completion_meta(response: Any) -> tuple[str | None, int | None, int | None]:
+    choice = response.choices[0]
+    finish = getattr(choice, "finish_reason", None)
+    usage = getattr(response, "usage", None)
+    completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
+    total_tokens = getattr(usage, "total_tokens", None) if usage else None
+    return finish, completion_tokens, total_tokens
 
 
 def call_llm_decision(client: OpenAI, portfolio_payload: dict[str, Any]) -> dict[str, Any]:
@@ -86,7 +120,33 @@ def call_llm_decision(client: OpenAI, portfolio_payload: dict[str, Any]) -> dict
         if not content:
             raise ValueError(f"{llm_provider()} LLM 返回空内容")
 
-        decision = json.loads(content)
+        finish, completion_tokens, total_tokens = _completion_meta(response)
+        log(
+            "模型",
+            f"持仓LLM第{attempt}次: finish={finish} "
+            f"content_len={len(content)} completion_tokens={completion_tokens} "
+            f"total_tokens={total_tokens}",
+        )
+        if finish == "length":
+            log("模型", "输出可能被 max_tokens 截断，若 JSON 解析失败将重试")
+
+        try:
+            decision = parse_llm_json_content(content)
+        except ValueError:
+            if attempt >= 2:
+                raise
+            messages.append({"role": "assistant", "content": content})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "上一次输出不是完整合法 JSON（可能被截断）。"
+                        "请重新输出完整 JSON 对象，reasoning 请缩短，确保所有字符串闭合。"
+                    ),
+                }
+            )
+            continue
+
         last_missing = find_missing_recommendation_codes(decision, required_codes)
         if not last_missing:
             return decision
@@ -108,6 +168,105 @@ def call_llm_decision(client: OpenAI, portfolio_payload: dict[str, Any]) -> dict
         )
 
     raise ValueError(f"模型未返回全部持仓建议，仍缺少: {last_missing}")
+
+
+def call_watchlist_llm_decision(
+    client: OpenAI,
+    portfolio_payload: dict[str, Any],
+    *,
+    max_attempts: int = 3,
+) -> dict[str, Any]:
+    """自选观察 LLM 决策：短 prompt + 精简 payload + JSON 截断重试。"""
+    required_codes = collect_required_codes(portfolio_payload)
+    if not required_codes:
+        required_codes = [
+            str(s.get("code"))
+            for s in (portfolio_payload.get("stocks") or [])
+            if isinstance(s, dict) and s.get("code")
+        ]
+    required_count = len(required_codes)
+    slim_payload = slim_watchlist_for_ai(portfolio_payload)
+    model = resolve_llm_model()
+    # 自选输出应更短；默认仍可读 LLM_MAX_TOKENS，但至少给到 4096
+    max_tokens = max(4096, min(llm_max_tokens(), 8192))
+
+    user_prompt = (
+        f"自选观察共 {required_count} 只，请输出紧凑 JSON。"
+        f"必须覆盖：{'、'.join(required_codes)}。\n"
+        "每条 reasoning≤80字；不要写持仓/仓位/降本；option 一律 none。\n"
+        f"{json.dumps(slim_payload, ensure_ascii=False, separators=(',', ':'))}"
+    )
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": WATCHLIST_SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        temperature = 0.1 if attempt > 1 else min(llm_temperature(), 0.2)
+        response = client.chat.completions.create(
+            model=model,
+            response_format={"type": "json_object"},
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        content = response.choices[0].message.content
+        if not content:
+            last_error = ValueError(f"{llm_provider()} LLM 返回空内容")
+            log("模型", f"自选LLM第{attempt}次空内容")
+            continue
+
+        finish, completion_tokens, total_tokens = _completion_meta(response)
+        log(
+            "模型",
+            f"自选LLM第{attempt}次: finish={finish} content_len={len(content)} "
+            f"completion_tokens={completion_tokens} total_tokens={total_tokens} "
+            f"temp={temperature}",
+        )
+
+        try:
+            decision = parse_llm_json_content(content)
+        except ValueError as exc:
+            last_error = exc
+            log("模型", f"自选LLM JSON失败: {exc}")
+            if attempt >= max_attempts:
+                break
+            messages.append({"role": "assistant", "content": content[:2000]})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "输出被截断或不是合法 JSON。"
+                        "请重新输出完整紧凑 JSON（单行也可），"
+                        "reasoning 每条≤40字，确保所有引号闭合，覆盖全部代码。"
+                    ),
+                }
+            )
+            continue
+
+        missing = find_missing_recommendation_codes(decision, required_codes)
+        if missing:
+            last_error = ValueError(f"缺少标的建议: {missing}")
+            log("模型", f"自选LLM缺标的: {missing}")
+            if attempt >= max_attempts:
+                break
+            messages.append({"role": "assistant", "content": content})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"缺少 {len(missing)} 个标的，请输出覆盖全部 "
+                        f"{required_count} 只的完整 JSON：\n"
+                        + "\n".join(f"- {code}" for code in missing)
+                    ),
+                }
+            )
+            continue
+
+        return decision
+
+    raise ValueError(f"自选 LLM 决策失败: {last_error}")
 
 
 def call_deepseek(client: OpenAI, portfolio_payload: dict[str, Any]) -> dict[str, Any]:

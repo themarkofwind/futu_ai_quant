@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from futu_ai_quant.config.settings import (
@@ -13,6 +13,10 @@ from futu_ai_quant.config.settings import (
 )
 
 _US_EASTERN = ZoneInfo("America/New_York")
+_HK_MORNING_OPEN = 9 * 60 + 30
+_HK_MORNING_CLOSE = 12 * 60
+_HK_AFTERNOON_OPEN = 13 * 60
+_HK_AFTERNOON_CLOSE = 16 * 60
 
 
 def is_hk_trading_session(now: datetime | None = None) -> bool:
@@ -21,9 +25,92 @@ def is_hk_trading_session(now: datetime | None = None) -> bool:
     if now.weekday() >= 5:
         return False
     minutes = now.hour * 60 + now.minute
-    morning = (9 * 60 + 30) <= minutes < (12 * 60)
-    afternoon = (13 * 60) <= minutes < (16 * 60)
+    morning = _HK_MORNING_OPEN <= minutes < _HK_MORNING_CLOSE
+    afternoon = _HK_AFTERNOON_OPEN <= minutes < _HK_AFTERNOON_CLOSE
     return morning or afternoon
+
+
+def next_hk_session_open(now: datetime | None = None) -> datetime:
+    """
+    下一港股可交易开盘时刻。
+
+    - 盘前 → 当日 09:30
+    - 午休（12:00–13:00）→ 当日 13:00
+    - 收盘后 / 周末 → 下一交易日 09:30
+    - 已在交易时段 → 返回 ``now``（调用方应先判断 ``is_hk_trading_session``）
+    """
+    now = now or datetime.now()
+    if is_hk_trading_session(now):
+        return now
+
+    day = now.replace(second=0, microsecond=0)
+    for _ in range(8):
+        if day.weekday() < 5:
+            morning = day.replace(hour=9, minute=30, second=0, microsecond=0)
+            afternoon = day.replace(hour=13, minute=0, second=0, microsecond=0)
+            minutes = day.hour * 60 + day.minute
+            if minutes < _HK_MORNING_OPEN:
+                return morning
+            if _HK_MORNING_CLOSE <= minutes < _HK_AFTERNOON_OPEN:
+                return afternoon
+            if minutes >= _HK_AFTERNOON_CLOSE:
+                day = (day + timedelta(days=1)).replace(hour=0, minute=0)
+                continue
+            # 理论上不会落到此处（盘中已在上方返回）
+            return morning if minutes < _HK_MORNING_CLOSE else afternoon
+        day = (day + timedelta(days=1)).replace(hour=0, minute=0)
+    return (now + timedelta(days=1)).replace(hour=9, minute=30, second=0, microsecond=0)
+
+
+def seconds_until_hk_session(now: datetime | None = None) -> float:
+    """距下一港股交易时段的秒数；已在时段内返回 0。"""
+    now = now or datetime.now()
+    if is_hk_trading_session(now):
+        return 0.0
+    target = next_hk_session_open(now)
+    return max((target - now).total_seconds(), 0.0)
+
+
+def next_us_session_open(now: datetime | None = None) -> datetime:
+    """下一美股常规开盘（美东 09:30）；返回带美东时区的 datetime。"""
+    if now is None:
+        eastern = datetime.now(_US_EASTERN)
+    elif now.tzinfo is not None:
+        eastern = now.astimezone(_US_EASTERN)
+    else:
+        eastern = now.replace(tzinfo=_US_EASTERN)
+
+    if is_us_trading_session(eastern):
+        return eastern
+
+    day = eastern.replace(second=0, microsecond=0)
+    for _ in range(8):
+        if day.weekday() < 5:
+            open_at = day.replace(hour=9, minute=30, second=0, microsecond=0)
+            minutes = day.hour * 60 + day.minute
+            if minutes < (9 * 60 + 30):
+                return open_at
+            # 已收盘 → 下一天
+            day = (day + timedelta(days=1)).replace(hour=0, minute=0)
+            continue
+        day = (day + timedelta(days=1)).replace(hour=0, minute=0)
+    return (eastern + timedelta(days=1)).replace(hour=9, minute=30, second=0, microsecond=0)
+
+
+def seconds_until_trading_session(market: str, now: datetime | None = None) -> float:
+    """距指定市场下一交易时段的秒数；已在时段内返回 0。"""
+    if market.upper() == "US":
+        if is_us_trading_session(now):
+            return 0.0
+        if now is None:
+            now_e = datetime.now(_US_EASTERN)
+        elif now.tzinfo is not None:
+            now_e = now.astimezone(_US_EASTERN)
+        else:
+            now_e = now.replace(tzinfo=_US_EASTERN)
+        target = next_us_session_open(now_e)
+        return max((target - now_e).total_seconds(), 0.0)
+    return seconds_until_hk_session(now)
 
 
 def is_us_trading_session(now: datetime | None = None) -> bool:

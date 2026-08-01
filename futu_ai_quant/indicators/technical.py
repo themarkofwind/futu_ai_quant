@@ -233,7 +233,13 @@ def compute_timeframe_indicators(
     ktype: KLType,
     max_count: int,
 ) -> dict[str, Any]:
-    timeframe = "daily" if ktype == KLType.K_DAY else "weekly"
+    if ktype == KLType.K_DAY:
+        timeframe = "daily"
+    elif ktype == KLType.K_WEEK:
+        timeframe = "weekly"
+    else:
+        # 15/30/60 分钟等统一按盘中灵敏度处理
+        timeframe = "intraday"
     result = _empty_indicator_result(timeframe)
 
     try:
@@ -241,7 +247,9 @@ def compute_timeframe_indicators(
         if ret != RET_OK or kline is None or kline.empty:
             result["error"] = f"K线拉取失败: {kline}"
             return result
-        return compute_indicators_from_frame(kline, timeframe)
+        out = compute_indicators_from_frame(kline, timeframe)
+        out["ktype"] = str(ktype)
+        return out
     except Exception as exc:
         result["error"] = str(exc)
         return result

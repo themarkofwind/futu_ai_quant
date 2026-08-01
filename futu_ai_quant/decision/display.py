@@ -23,8 +23,14 @@ def build_technical_summary(stock: dict[str, Any]) -> str:
 
     swing = stock.get("swing_strategy") or {}
     tier = swing.get("loss_tier")
-    if tier:
+    is_watchlist = tier == "watchlist" or str(stock.get("position_type") or "") == "WATCHLIST"
+    if tier and not is_watchlist:
         parts.append(f"分层={tier}")
+    elif is_watchlist:
+        parts.append("模式=自选观察")
+        if stock.get("use_intraday"):
+            bar = (stock.get("swing_strategy") or {}).get("intraday_bar") or "30m"
+            parts.append(f"盘中={bar}")
 
     combined = stock.get("combined_swing_signal") or {}
     if combined.get("effective_signal"):
@@ -38,8 +44,12 @@ def build_technical_summary(stock: dict[str, Any]) -> str:
     if pnl.get("market_price") is not None:
         parts.append(f"现价={_fmt_num(pnl['market_price'])}")
 
-    for key, label in (("daily", "日K"), ("weekly", "周K")):
+    for key, label in (("daily", "日K"), ("weekly", "周K"), ("intraday", "盘中")):
+        if key == "intraday" and not is_watchlist:
+            continue
         frame = stock.get(key) or {}
+        if key == "intraday" and not frame:
+            continue
         if frame.get("error"):
             parts.append(f"{label}=数据缺失")
             continue
@@ -58,7 +68,16 @@ def build_technical_summary(stock: dict[str, Any]) -> str:
         parts.append(" ".join(chunk))
 
     trade_plan = stock.get("stock_trade_plan") or {}
-    if trade_plan.get("direction") not in (None, "none"):
+    if is_watchlist:
+        direction = trade_plan.get("direction")
+        low = trade_plan.get("trigger_price_low")
+        high = trade_plan.get("trigger_price_high")
+        if direction == "buy" and low is not None:
+            parts.append(f"买入参考={low}-{high}")
+        elif direction == "sell" and low is not None:
+            parts.append(f"卖出参考={low}-{high}")
+        # 观望时价带放在 tip/参考价行，技术面不重复
+    elif trade_plan.get("direction") not in (None, "none"):
         parts.append(
             f"预计算波段={trade_plan['direction']} "
             f"{trade_plan.get('suggested_lots', 0)}手"
@@ -69,7 +88,7 @@ def build_technical_summary(stock: dict[str, Any]) -> str:
             parts.append(f"观望参考={watch_text}")
 
     opt_plan = stock.get("option_trade_plan") or {}
-    if opt_plan.get("action") not in (None, "none"):
+    if not is_watchlist and opt_plan.get("action") not in (None, "none"):
         parts.append(f"期权建议={opt_plan.get('label') or opt_plan.get('action')}")
 
     hist = stock.get("trade_history") or {}
@@ -134,15 +153,31 @@ def format_decision_summary(decision: dict[str, Any]) -> str:
         lines.append(summary)
         lines.append("")
 
-    lines.append("【操作建议】")
+    is_watchlist = decision.get("analysis_mode") == "watchlist"
+    lines.append("【操作建议】" if not is_watchlist else "【自选提示】")
     for rec in decision.get("recommendations", []):
         if not isinstance(rec, dict):
             continue
         code = rec.get("code", "")
         name = rec.get("display_name") or rec.get("name") or code
         action = rec.get("action", "HOLD")
+        action_label = rec.get("action_label") or action
         confidence = rec.get("confidence")
         conf_text = f" 置信度={confidence:.0%}" if isinstance(confidence, (int, float)) else ""
+
+        if is_watchlist:
+            lines.append(f"- {code} {name} → {action_label}{conf_text}")
+            tip = str(rec.get("tip") or "").strip()
+            if tip:
+                lines.append(f"  提示：{tip}")
+            tech = str(rec.get("technical_summary") or "").strip()
+            if tech:
+                lines.append(f"  技术面：{tech}")
+            reasoning = str(rec.get("reasoning") or "").strip()
+            if reasoning:
+                lines.append(f"  研判：{reasoning}")
+            lines.append("")
+            continue
 
         lines.append(f"- {code} {name} → {action}{conf_text}")
 

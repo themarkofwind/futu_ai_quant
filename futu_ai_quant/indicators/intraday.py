@@ -7,11 +7,7 @@ from typing import Any
 import pandas as pd
 import pandas_ta  # noqa: F401 — 注册 DataFrame.ta 访问器
 
-from futu_ai_quant.strategy.intraday_t_settings import (
-    INTRADAY_T_BOLL_LENGTH,
-    INTRADAY_T_BOLL_STD,
-    INTRADAY_T_RSI_LENGTH,
-)
+from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.utils.numbers import safe_float
 
 
@@ -88,9 +84,18 @@ def session_vwap_from_klines(frame: pd.DataFrame, session_date: str) -> float | 
 
 
 def _resolve_boll_columns(frame: pd.DataFrame) -> tuple[str, str, str]:
-    upper = f"BBU_{INTRADAY_T_BOLL_LENGTH}_{float(INTRADAY_T_BOLL_STD)}_{float(INTRADAY_T_BOLL_STD)}"
-    mid = f"BBM_{INTRADAY_T_BOLL_LENGTH}_{float(INTRADAY_T_BOLL_STD)}_{float(INTRADAY_T_BOLL_STD)}"
-    lower = f"BBL_{INTRADAY_T_BOLL_LENGTH}_{float(INTRADAY_T_BOLL_STD)}_{float(INTRADAY_T_BOLL_STD)}"
+    upper = (
+        f"BBU_{its.INTRADAY_T_BOLL_LENGTH}_"
+        f"{float(its.INTRADAY_T_BOLL_STD)}_{float(its.INTRADAY_T_BOLL_STD)}"
+    )
+    mid = (
+        f"BBM_{its.INTRADAY_T_BOLL_LENGTH}_"
+        f"{float(its.INTRADAY_T_BOLL_STD)}_{float(its.INTRADAY_T_BOLL_STD)}"
+    )
+    lower = (
+        f"BBL_{its.INTRADAY_T_BOLL_LENGTH}_"
+        f"{float(its.INTRADAY_T_BOLL_STD)}_{float(its.INTRADAY_T_BOLL_STD)}"
+    )
     if upper not in frame.columns:
         upper = next((c for c in frame.columns if c.startswith("BBU_")), upper)
     if mid not in frame.columns:
@@ -115,27 +120,27 @@ def compute_intraday_indicators(frame: pd.DataFrame) -> dict[str, Any]:
     }
 
     work = normalize_kline_frame(frame)
-    min_bars = max(INTRADAY_T_BOLL_LENGTH, INTRADAY_T_RSI_LENGTH) + 2
+    min_bars = max(its.INTRADAY_T_BOLL_LENGTH, its.INTRADAY_T_RSI_LENGTH) + 2
     if len(work) < min_bars:
         result["error"] = f"K 线不足（{len(work)}/{min_bars}）"
         return result
 
     try:
-        work.ta.rsi(close="close", length=INTRADAY_T_RSI_LENGTH, append=True)
+        work.ta.rsi(close="close", length=its.INTRADAY_T_RSI_LENGTH, append=True)
         work.ta.bbands(
             close="close",
-            length=INTRADAY_T_BOLL_LENGTH,
-            std=INTRADAY_T_BOLL_STD,
+            length=its.INTRADAY_T_BOLL_LENGTH,
+            std=its.INTRADAY_T_BOLL_STD,
             append=True,
         )
-        rsi_col = f"RSI_{INTRADAY_T_RSI_LENGTH}"
+        rsi_col = f"RSI_{its.INTRADAY_T_RSI_LENGTH}"
         if rsi_col not in work.columns:
             rsi_col = next((c for c in work.columns if c.startswith("RSI_")), rsi_col)
 
         upper_col, mid_col, lower_col = _resolve_boll_columns(work)
         latest = work.iloc[-1]
         volume_ma = (
-            round(float(work["volume"].tail(INTRADAY_T_BOLL_LENGTH).mean()), 2)
+            round(float(work["volume"].tail(its.INTRADAY_T_BOLL_LENGTH).mean()), 2)
             if work["volume"].notna().any()
             else None
         )

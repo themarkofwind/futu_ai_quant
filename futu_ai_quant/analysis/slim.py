@@ -370,3 +370,47 @@ def slim_portfolio_for_ai(portfolio_payload: dict[str, Any]) -> dict[str, Any]:
         "stocks": [slim_stock_for_ai(stock) for stock in portfolio_payload.get("stocks", [])],
         "options": [slim_option_for_ai(opt) for opt in portfolio_payload.get("options", [])],
     }
+
+
+def slim_watchlist_for_ai(portfolio_payload: dict[str, Any]) -> dict[str, Any]:
+    """自选观察专用精简：去掉期权/成交史等持仓语义，降低 LLM 输出长度。"""
+    base = slim_portfolio_for_ai(portfolio_payload)
+    stocks: list[dict[str, Any]] = []
+    for stock in base.get("stocks") or []:
+        if not isinstance(stock, dict):
+            continue
+        plan = stock.get("stock_trade_plan") or {}
+        stocks.append(
+            {
+                "code": stock.get("code"),
+                "pnl": {
+                    "market_price": (stock.get("pnl") or {}).get("market_price"),
+                    "today_change_pct": (stock.get("pnl") or {}).get("today_change_pct"),
+                },
+                "daily": stock.get("daily"),
+                "weekly": stock.get("weekly"),
+                "intraday": stock.get("intraday"),
+                "combined_swing_signal": stock.get("combined_swing_signal"),
+                "use_intraday": stock.get("use_intraday"),
+                "stock_trade_plan": {
+                    "direction": plan.get("direction", "none"),
+                    "trigger_price_low": plan.get("trigger_price_low"),
+                    "trigger_price_high": plan.get("trigger_price_high"),
+                    "watch_triggers": plan.get("watch_triggers") or [],
+                    "trade_note": plan.get("trade_note"),
+                    "lot_size": plan.get("lot_size"),
+                },
+            }
+        )
+    codes = [str(s.get("code")) for s in stocks if s.get("code")]
+    return {
+        "analysis_mode": "watchlist",
+        "as_of": base.get("as_of"),
+        "market": base.get("market"),
+        "required_codes": codes,
+        "macro_risk": {
+            "risk_level": (base.get("macro_risk") or {}).get("risk_level"),
+            "summary": (base.get("macro_risk") or {}).get("summary"),
+        },
+        "stocks": stocks,
+    }

@@ -17,6 +17,7 @@ from futu import (
 )
 
 from futu_ai_quant.brokers.futu.intraday_kline import fetch_intraday_5m_klines
+from futu_ai_quant.brokers.futu.market_state import FutuMarketSessionGate
 from futu_ai_quant.brokers.futu.quotes import fetch_snapshot_map
 from futu_ai_quant.indicators.intraday import (
     append_kline_bars,
@@ -33,17 +34,13 @@ from futu_ai_quant.notify.bark import (
     bark_title_for_signal,
     send_bark_async,
 )
+from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.strategy.intraday_t import (
     IntradayTContext,
     SignalEvent,
     SignalKind,
     build_status_message,
     evaluate_intraday_t,
-)
-from futu_ai_quant.strategy.intraday_t_settings import (
-    INTRADAY_T_EVAL_TICK_SEC,
-    INTRADAY_T_KLINE_WINDOW,
-    INTRADAY_T_STATUS_INTERVAL_SEC,
 )
 from futu_ai_quant.utils.numbers import safe_float
 from futu_ai_quant.utils.retry import retry_call
@@ -108,15 +105,22 @@ class IntradayTMonitor:
         code: str,
         *,
         ctx: IntradayTContext | None = None,
-        status_interval_sec: int = INTRADAY_T_STATUS_INTERVAL_SEC,
-        eval_tick_sec: float = INTRADAY_T_EVAL_TICK_SEC,
+        status_interval_sec: int | None = None,
+        eval_tick_sec: float | None = None,
+        session_gate: FutuMarketSessionGate | None = None,
     ) -> None:
         self.quote_ctx = quote_ctx
         self.code = code
         self.ctx = ctx or IntradayTContext()
-        self.status_interval_sec = status_interval_sec
-        self.eval_tick_sec = eval_tick_sec
-
+        self.session_gate = session_gate or FutuMarketSessionGate(quote_ctx)
+        self.status_interval_sec = (
+            its.INTRADAY_T_STATUS_INTERVAL_SEC
+            if status_interval_sec is None
+            else status_interval_sec
+        )
+        self.eval_tick_sec = (
+            its.INTRADAY_T_EVAL_TICK_SEC if eval_tick_sec is None else eval_tick_sec
+        )
         self._lock = threading.Lock()
         self._kline_df = pd.DataFrame()
         self._locked_indicators: dict[str, Any] = {"ready": False, "locked": False}
@@ -133,6 +137,41 @@ class IntradayTMonitor:
         self._last_bark_at = 0.0
         self._rt_handler = IntradayRTHandler(self)
         self._kline_handler = IntradayKlineHandler(self)
+        # CLI 显式传入的参数在热加载时不被 .env 覆盖
+        self._freeze_status_interval = status_interval_sec is not None
+        self._freeze_eval_tick = eval_tick_sec is not None
+
+    def apply_hot_config(
+        self,
+        *,
+        lot_size: int | None = None,
+        target_spread: float | None = None,
+        status_interval_sec: int | None = None,
+        eval_tick_sec: float | None = None,
+    ) -> list[str]:
+        """应用热加载后的运行时参数，返回变更说明。"""
+        notes: list[str] = []
+        if lot_size is not None and lot_size != self.ctx.lot_size:
+            notes.append(f"lot_size {self.ctx.lot_size}→{lot_size}")
+            self.ctx.lot_size = lot_size
+        if target_spread is not None and target_spread != self.ctx.target_spread:
+            notes.append(f"target_spread {self.ctx.target_spread}→{target_spread}")
+            self.ctx.target_spread = target_spread
+        if not self._freeze_status_interval:
+            value = (
+                its.INTRADAY_T_STATUS_INTERVAL_SEC
+                if status_interval_sec is None
+                else status_interval_sec
+            )
+            if value != self.status_interval_sec:
+                notes.append(f"status_interval {self.status_interval_sec}→{value}")
+                self.status_interval_sec = value
+        if not self._freeze_eval_tick:
+            value = its.INTRADAY_T_EVAL_TICK_SEC if eval_tick_sec is None else eval_tick_sec
+            if value != self.eval_tick_sec:
+                notes.append(f"eval_tick {self.eval_tick_sec}→{value}")
+                self.eval_tick_sec = value
+        return notes
 
     def check_connection(self) -> None:
         ret, state = retry_call(
@@ -159,7 +198,7 @@ class IntradayTMonitor:
             )
 
     def bootstrap_history(self) -> None:
-        log_intraday_t(f"预热 {self.code} 5 分钟 K 线窗口（{INTRADAY_T_KLINE_WINDOW} 根）...")
+        log_intraday_t(f"预热 {self.code} 5 分钟 K 线窗口（{its.INTRADAY_T_KLINE_WINDOW} 根）...")
         kline, source = fetch_intraday_5m_klines(self.quote_ctx, self.code)
 
         with self._lock:
@@ -189,6 +228,10 @@ class IntradayTMonitor:
         log_intraday_t(
             f"已订阅 {self.code} | RT_DATA=秒级现价/VWAP | K_5M=5分钟收盘锁定指标"
         )
+
+    def _in_trading_session(self) -> bool:
+        """以 OpenD get_market_state 为准（含港交所假期）；失败时回退本地时钟。"""
+        return self.session_gate.is_continuous_trading(self.code)
 
     def _session_date(self) -> str:
         return session_date_prefix(market_of_code(self.code))
@@ -232,6 +275,8 @@ class IntradayTMonitor:
     def on_rt_data(self, frame: pd.DataFrame) -> None:
         """秒级路径：用推送现价对比已锁定的 RSI / BOLL。"""
         try:
+            if not self._in_trading_session():
+                return
             row = frame.iloc[-1]
             rt_time = str(row.get("time", ""))
             price = safe_float(row.get("cur_price"))
@@ -273,20 +318,21 @@ class IntradayTMonitor:
                 self._kline_df = append_kline_bars(
                     self._kline_df,
                     frame,
-                    max_rows=INTRADAY_T_KLINE_WINDOW,
+                    max_rows=its.INTRADAY_T_KLINE_WINDOW,
                 )
 
                 if prev_forming is not None and pushed_time_key != prev_forming:
                     bar_closed = True
                     self._refresh_locked_indicators(reason="推送收盘")
-                    events = self._evaluate_locked()
+                    if self._in_trading_session():
+                        events = self._evaluate_locked()
                 else:
                     self._forming_time_key = pushed_time_key
 
                 if not self._rt_data_is_live():
                     self._sync_price_vwap_from_klines_unlocked()
 
-            if bar_closed:
+            if bar_closed and events:
                 self._emit_events(events)
         except Exception as exc:
             log_intraday_t(f"on_kline_push 异常: {exc}")
@@ -375,6 +421,8 @@ class IntradayTMonitor:
         """
         if self.eval_tick_sec <= 0:
             return
+        if not self._in_trading_session():
+            return
         now = time.time()
         if (now - self._last_eval_at) < self.eval_tick_sec:
             return
@@ -404,5 +452,6 @@ class IntradayTMonitor:
             f"监控启动 | 标的={self.code} | 单次={self.ctx.lot_size} 股 | "
             f"目标净价差>={self.ctx.target_spread} {self.ctx.currency} | 状态={self.ctx.state.value} | "
             f"当前模式={mode} | 现价=秒级推送 | 指标=5分钟收盘锁定 | 补帧评估={tick_note} | "
-            f"Bark={'开启' if bark_is_configured() else '关闭'}"
+            f"Bark={'开启' if bark_is_configured() else '关闭'} | "
+            f"执行门禁=OpenD market_state(MORNING/AFTERNOON) | {self.session_gate.describe(self.code)}"
         )

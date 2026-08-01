@@ -62,6 +62,85 @@ def build_rules_reasoning(stock: dict[str, Any]) -> str:
     return "；".join(parts)
 
 
+def build_watchlist_rules_reasoning(stock: dict[str, Any]) -> str:
+    """自选观察研判：不提仓位/分层。"""
+    combined = stock.get("combined_swing_signal") or {}
+    daily = stock.get("daily") or {}
+    weekly = stock.get("weekly") or {}
+    parts = [
+        f"日K={daily.get('swing_signal')} 周K={weekly.get('swing_signal')}",
+        f"有效信号={combined.get('effective_signal')}",
+    ]
+    if combined.get("signal_note"):
+        parts.append(str(combined["signal_note"]))
+    return "；".join(parts)
+
+
+def watchlist_action_label(action: str) -> str:
+    mapping = {
+        "BUY": "买入/回补",
+        "SELL": "卖出/做空",
+        "HOLD": "观望",
+        "ROLL": "移仓",
+    }
+    return mapping.get(action, action)
+
+
+def build_watchlist_rules_decision(stocks: list[dict[str, Any]]) -> dict[str, Any]:
+    """自选规则决策：买卖提示 + 股价区间，不含个人持仓语义。"""
+    recommendations: list[dict[str, Any]] = []
+    for stock in stocks:
+        stock_plan = serialize_trade_plan_for_decision(stock)
+        action = infer_stock_action(stock)
+        trigger_low = stock_plan.get("trigger_price_low")
+        trigger_high = stock_plan.get("trigger_price_high")
+        watch_text = format_watch_triggers(stock_plan)
+        if trigger_low is not None and trigger_high is not None:
+            suggested_trigger = f"{trigger_low}-{trigger_high}"
+        elif watch_text:
+            suggested_trigger = watch_text
+        else:
+            suggested_trigger = "无"
+
+        tip = watchlist_action_label(action)
+        if action == "BUY" and trigger_low is not None:
+            tip = f"买入/回补 参考价 {trigger_low}-{trigger_high}"
+        elif action == "SELL" and trigger_low is not None:
+            tip = f"卖出/做空 参考价 {trigger_low}-{trigger_high}"
+        elif action == "HOLD" and watch_text:
+            tip = f"观望；{watch_text}"
+
+        recommendations.append(
+            {
+                "code": stock["code"],
+                "name": stock.get("name", ""),
+                "action": action,
+                "action_label": watchlist_action_label(action),
+                "tip": tip,
+                "confidence": 0.75 if action != "HOLD" else 0.6,
+                "reasoning": build_watchlist_rules_reasoning(stock),
+                "suggested_trigger": suggested_trigger,
+                "stock_trade_plan": stock_plan,
+                "option_trade_plan": empty_option_trade_plan(),
+                "decision_source": "rules",
+            }
+        )
+
+    buy_n = sum(1 for r in recommendations if r["action"] == "BUY")
+    sell_n = sum(1 for r in recommendations if r["action"] == "SELL")
+    hold_n = sum(1 for r in recommendations if r["action"] == "HOLD")
+    summary = (
+        f"自选观察共 {len(stocks)} 只：买入提示 {buy_n}、卖出提示 {sell_n}、观望 {hold_n}。"
+        f"以下区间为技术面参考价，非持仓仓位建议。"
+    )
+    return {
+        "portfolio_risk_summary": summary,
+        "recommendations": recommendations,
+        "decision_source": "rules",
+        "analysis_mode": "watchlist",
+    }
+
+
 def build_rules_portfolio_summary(stocks: list[dict[str, Any]], options: list[dict[str, Any]]) -> str:
     tiers: dict[str, int] = {}
     for stock in stocks:

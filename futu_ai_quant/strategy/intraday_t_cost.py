@@ -9,14 +9,7 @@ from futu import OpenQuoteContext
 from futu_ai_quant.brokers.futu.quotes import fetch_snapshot_map
 from futu_ai_quant.market.fees import estimate_hk_stock_trade_fees
 from futu_ai_quant.market.session import currency_of_market, market_of_code
-from futu_ai_quant.strategy.intraday_t_settings import (
-    INTRADAY_T_MIN_PROFIT_COST_RATIO,
-    INTRADAY_T_TARGET_SPREAD,
-    INTRADAY_T_TARGET_SPREAD_AUTO,
-    INTRADAY_T_US_COMMISSION_PER_SHARE,
-    INTRADAY_T_US_MIN_COMMISSION,
-    INTRADAY_T_US_PLATFORM_FEE,
-)
+from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.utils.numbers import safe_float
 
 
@@ -26,8 +19,11 @@ def _round_up_spread(value: float) -> float:
 
 def estimate_us_stock_trade_fees(*, shares: int) -> float:
     """美股单边交易费用估算（佣金 + 平台费）。"""
-    commission = max(shares * INTRADAY_T_US_COMMISSION_PER_SHARE, INTRADAY_T_US_MIN_COMMISSION)
-    return round(commission + INTRADAY_T_US_PLATFORM_FEE, 4)
+    commission = max(
+        shares * its.INTRADAY_T_US_COMMISSION_PER_SHARE,
+        its.INTRADAY_T_US_MIN_COMMISSION,
+    )
+    return round(commission + its.INTRADAY_T_US_PLATFORM_FEE, 4)
 
 
 def estimate_round_trip_t_fees(code: str, price: float, lot_size: int) -> float:
@@ -49,9 +45,11 @@ def min_target_spread_from_fees(
     fees: float,
     lot_size: int,
     *,
-    cost_ratio: float = INTRADAY_T_MIN_PROFIT_COST_RATIO,
+    cost_ratio: float | None = None,
 ) -> float:
     """根据往返费用与股数，计算每股最低目标价差。"""
+    if cost_ratio is None:
+        cost_ratio = its.INTRADAY_T_MIN_PROFIT_COST_RATIO
     if lot_size <= 0 or fees <= 0:
         return 0.0
     return _round_up_spread((fees / lot_size) * cost_ratio)
@@ -67,15 +65,22 @@ def resolve_intraday_t_target_spread(
     code: str,
     *,
     lot_size: int,
-    manual_spread: float = INTRADAY_T_TARGET_SPREAD,
-    cost_ratio: float = INTRADAY_T_MIN_PROFIT_COST_RATIO,
-    auto: bool = INTRADAY_T_TARGET_SPREAD_AUTO,
+    manual_spread: float | None = None,
+    cost_ratio: float | None = None,
+    auto: bool | None = None,
 ) -> tuple[float, str]:
     """
     解析有效目标价差：``max(手动配置, 费用保本×安全系数)``。
 
     返回 (target_spread, 说明)。
     """
+    if manual_spread is None:
+        manual_spread = its.INTRADAY_T_TARGET_SPREAD
+    if cost_ratio is None:
+        cost_ratio = its.INTRADAY_T_MIN_PROFIT_COST_RATIO
+    if auto is None:
+        auto = its.INTRADAY_T_TARGET_SPREAD_AUTO
+
     currency = currency_of_market(market_of_code(code))
     if not auto or lot_size <= 0:
         return manual_spread, f"目标净价差 {manual_spread:.2f} {currency}（未启用费用自动校正）"

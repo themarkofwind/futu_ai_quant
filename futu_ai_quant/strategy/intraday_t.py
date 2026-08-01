@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
@@ -14,16 +14,7 @@ from futu_ai_quant.indicators.intraday import (
     count_consecutive_closes_below_lower,
     normalize_kline_frame,
 )
-from futu_ai_quant.strategy.intraday_t_settings import (
-    INTRADAY_T_CONSECUTIVE_ABOVE_BAND,
-    INTRADAY_T_LOT_SIZE,
-    INTRADAY_T_RSI_BUY,
-    INTRADAY_T_RSI_SELL,
-    INTRADAY_T_TARGET_SPREAD,
-    INTRADAY_T_VOLUME_SURGE_RATIO,
-    INTRADAY_T_VWAP_DISCOUNT,
-    INTRADAY_T_VWAP_PREMIUM,
-)
+from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.utils.numbers import safe_float
 
 
@@ -59,8 +50,8 @@ class IntradayTContext:
     entry_price: float | None = None
     warning_uptrend: bool = False
     warning_downtrend: bool = False
-    lot_size: int = INTRADAY_T_LOT_SIZE
-    target_spread: float = INTRADAY_T_TARGET_SPREAD
+    lot_size: int = field(default_factory=lambda: its.INTRADAY_T_LOT_SIZE)
+    target_spread: float = field(default_factory=lambda: its.INTRADAY_T_TARGET_SPREAD)
     currency: str = "HKD"
 
     @property
@@ -88,10 +79,14 @@ def _resolve_upper_col(frame: pd.DataFrame) -> str | None:
 def detect_strong_uptrend_warning(
     indicators: dict[str, Any],
     *,
-    volume_surge_ratio: float = INTRADAY_T_VOLUME_SURGE_RATIO,
-    consecutive_above: int = INTRADAY_T_CONSECUTIVE_ABOVE_BAND,
+    volume_surge_ratio: float | None = None,
+    consecutive_above: int | None = None,
 ) -> tuple[bool, str | None]:
     """单边放量暴涨：暂停高抛开仓，避免卖飞。"""
+    if volume_surge_ratio is None:
+        volume_surge_ratio = its.INTRADAY_T_VOLUME_SURGE_RATIO
+    if consecutive_above is None:
+        consecutive_above = its.INTRADAY_T_CONSECUTIVE_ABOVE_BAND
     if not indicators.get("locked") and not indicators.get("ready"):
         return False, None
 
@@ -124,10 +119,14 @@ def detect_strong_uptrend_warning(
 def detect_strong_downtrend_warning(
     indicators: dict[str, Any],
     *,
-    volume_surge_ratio: float = INTRADAY_T_VOLUME_SURGE_RATIO,
-    consecutive_below: int = INTRADAY_T_CONSECUTIVE_ABOVE_BAND,
+    volume_surge_ratio: float | None = None,
+    consecutive_below: int | None = None,
 ) -> tuple[bool, str | None]:
     """单边放量暴跌：暂停低吸开仓，避免接飞刀。"""
+    if volume_surge_ratio is None:
+        volume_surge_ratio = its.INTRADAY_T_VOLUME_SURGE_RATIO
+    if consecutive_below is None:
+        consecutive_below = its.INTRADAY_T_CONSECUTIVE_ABOVE_BAND
     if not indicators.get("locked") and not indicators.get("ready"):
         return False, None
 
@@ -223,8 +222,8 @@ def evaluate_intraday_t(
         and rsi is not None
         and vwap is not None
         and price >= boll_upper
-        and rsi >= INTRADAY_T_RSI_SELL
-        and price > vwap * INTRADAY_T_VWAP_PREMIUM
+        and rsi >= its.INTRADAY_T_RSI_SELL
+        and price > vwap * its.INTRADAY_T_VWAP_PREMIUM
     )
 
     buy_open_ready = (
@@ -232,8 +231,8 @@ def evaluate_intraday_t(
         and rsi is not None
         and vwap is not None
         and price <= boll_lower
-        and rsi <= INTRADAY_T_RSI_BUY
-        and price < vwap * INTRADAY_T_VWAP_DISCOUNT
+        and rsi <= its.INTRADAY_T_RSI_BUY
+        and price < vwap * its.INTRADAY_T_VWAP_DISCOUNT
     )
 
     if ctx.state == IntradayTState.AT_BASE and sell_open_ready and not ctx.warning_uptrend:
@@ -280,7 +279,7 @@ def evaluate_intraday_t(
             boll_lower is not None
             and rsi is not None
             and price <= boll_lower
-            and rsi <= INTRADAY_T_RSI_BUY
+            and rsi <= its.INTRADAY_T_RSI_BUY
         )
         if take_profit or technical_buy:
             reason = (
@@ -313,8 +312,8 @@ def evaluate_intraday_t(
             and rsi is not None
             and vwap is not None
             and price >= boll_upper
-            and rsi >= INTRADAY_T_RSI_SELL
-            and price > vwap * INTRADAY_T_VWAP_PREMIUM
+            and rsi >= its.INTRADAY_T_RSI_SELL
+            and price > vwap * its.INTRADAY_T_VWAP_PREMIUM
         )
         if take_profit or technical_sell:
             reason = (

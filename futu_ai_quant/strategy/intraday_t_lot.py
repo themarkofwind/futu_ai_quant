@@ -12,7 +12,7 @@ from futu_ai_quant.brokers.futu.quotes import fetch_snapshot_map
 from futu_ai_quant.domain.positions import is_option_code
 from futu_ai_quant.market.lot import calc_full_lot_trade_qty, resolve_lot_size_detail
 from futu_ai_quant.market.session import market_of_code
-from futu_ai_quant.strategy.intraday_t_settings import INTRADAY_T_LOT_SIZE
+from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.utils.numbers import safe_float
 
 
@@ -46,13 +46,15 @@ def resolve_intraday_t_lot_size(
     code: str,
     *,
     lot_pct: float,
-    fallback_lot_size: int = INTRADAY_T_LOT_SIZE,
+    fallback_lot_size: int | None = None,
 ) -> tuple[int, str]:
     """
     按持仓比例计算单次做 T 整手股数。
 
     返回 (lot_size, 说明)。无持仓或不足一手时回退 ``fallback_lot_size``。
     """
+    if fallback_lot_size is None:
+        fallback_lot_size = its.INTRADAY_T_LOT_SIZE
     if lot_pct <= 0:
         return fallback_lot_size, f"未启用持仓比例，使用固定 {fallback_lot_size} 股"
 
@@ -103,9 +105,11 @@ def resolve_lot_sizes_for_codes(
     codes: list[str],
     *,
     lot_pct: float,
-    fallback_lot_size: int = INTRADAY_T_LOT_SIZE,
+    fallback_lot_size: int | None = None,
 ) -> dict[str, tuple[int, str]]:
     """批量解析多标的做 T 股数。"""
+    if fallback_lot_size is None:
+        fallback_lot_size = its.INTRADAY_T_LOT_SIZE
     result: dict[str, tuple[int, str]] = {}
     for code in codes:
         result[code] = resolve_intraday_t_lot_size(

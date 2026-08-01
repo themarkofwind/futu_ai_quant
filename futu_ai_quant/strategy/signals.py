@@ -42,7 +42,12 @@ def resolve_effective_swing_signal(
             combined["effective_signal"] = "HOLD"
             combined["signal_note"] = "深套仓位需次周期配合才小仓低吸"
             return combined
-        if primary_tf == "daily" and secondary_signal in ("HOLD", "WAIT"):
+        # 自选观察：日K买入信号不必强制要求周K非观望
+        if (
+            loss_tier != "watchlist"
+            and primary_tf == "daily"
+            and secondary_signal in ("HOLD", "WAIT")
+        ):
             combined["effective_signal"] = "HOLD"
             combined["signal_note"] = "日K主导低吸需周K非观望确认"
             return combined
@@ -50,6 +55,11 @@ def resolve_effective_swing_signal(
             combined["signal_note"] = "双周期共振看多"
         elif secondary_signal in ("HOLD", "WAIT") and primary_tf == "weekly":
             combined["signal_note"] = "周K主导，次周期观望"
+        elif secondary_signal in ("HOLD", "WAIT") and loss_tier == "watchlist":
+            if primary_tf == "intraday":
+                combined["signal_note"] = "盘中看多，日K观望，作买入参考"
+            else:
+                combined["signal_note"] = "日K看多，周K观望，作买入参考"
 
         combined["effective_signal"] = "BUY_SWING"
         return combined
@@ -124,6 +134,22 @@ def derive_swing_signal(
             base_signal = "BUY_SWING"
         elif rsi > 60 and boll_position in ("above_upper", "near_upper"):
             base_signal = "SELL_SWING"
+    elif timeframe == "intraday":
+        # 盘中更灵敏：阈值介于日/周之间，且不强制量能确认
+        if rsi < 40 and boll_position in ("below_lower", "near_lower"):
+            base_signal = "BUY_SWING"
+        elif rsi > 60 and boll_position in ("above_upper", "near_upper"):
+            base_signal = "SELL_SWING"
+        elif rsi < 35 and boll_position == "around_mid" and macd_bias in (
+            "golden_cross",
+            "bullish",
+        ):
+            base_signal = "BUY_SWING"
+        elif rsi > 65 and boll_position == "around_mid" and macd_bias in (
+            "death_cross",
+            "bearish",
+        ):
+            base_signal = "SELL_SWING"
     else:
         if rsi < 35 and boll_position in ("below_lower", "near_lower"):
             base_signal = "BUY_SWING"
@@ -139,9 +165,67 @@ def derive_swing_signal(
     if base_signal == "SELL_SWING" and macd_bias in ("golden_cross", "bullish"):
         return "HOLD"
 
-    # 日K需成交量确认；MACD 同向时强化信号
+    # 日K需成交量确认；MACD 同向时强化信号。盘中不做量能硬门槛。
     if timeframe == "daily" and not volume_confirmed:
         if macd_bias not in ("golden_cross", "death_cross"):
             return "HOLD"
 
     return base_signal
+
+
+def resolve_watchlist_combined_signal(
+    *,
+    daily: dict[str, Any],
+    weekly: dict[str, Any],
+    intraday: dict[str, Any] | None = None,
+    use_intraday: bool = False,
+) -> dict[str, Any]:
+    """
+    自选综合信号。
+
+    - 盘前/手动：日K 主、周K 次（与观察分层一致）
+    - 午后/收盘前：盘中K 主、日K 次；周K 强反向则降级观望
+    """
+    swing_strategy = {
+        "loss_tier": "watchlist",
+        "primary_timeframe": "intraday" if use_intraday else "daily",
+    }
+
+    if use_intraday and intraday and not intraday.get("error"):
+        primary_signal = str(intraday.get("swing_signal") or "WAIT")
+        secondary_signal = str(daily.get("swing_signal") or "WAIT")
+        combined = resolve_effective_swing_signal(
+            primary_signal,
+            secondary_signal,
+            swing_strategy,
+            primary_timeframe="intraday",
+        )
+        combined["intraday_signal"] = primary_signal
+        combined["daily_signal"] = secondary_signal
+        combined["weekly_signal"] = weekly.get("swing_signal")
+        weekly_signal = str(weekly.get("swing_signal") or "WAIT")
+        effective = combined.get("effective_signal")
+        if effective == "BUY_SWING" and weekly_signal == "SELL_SWING":
+            combined["effective_signal"] = "HOLD"
+            combined["signal_note"] = "盘中看多但周线偏空，降级观望"
+        elif effective == "SELL_SWING" and weekly_signal == "BUY_SWING":
+            combined["effective_signal"] = "HOLD"
+            combined["signal_note"] = "盘中看空但周线偏多，降级观望"
+        elif combined.get("signal_note") is None and primary_signal in (
+            "BUY_SWING",
+            "SELL_SWING",
+        ):
+            combined["signal_note"] = "盘中周期主导，日K为辅"
+        return combined
+
+    primary_signal = str(daily.get("swing_signal") or "WAIT")
+    secondary_signal = str(weekly.get("swing_signal") or "WAIT")
+    combined = resolve_effective_swing_signal(
+        primary_signal,
+        secondary_signal,
+        swing_strategy,
+        primary_timeframe="daily",
+    )
+    combined["daily_signal"] = primary_signal
+    combined["weekly_signal"] = secondary_signal
+    return combined
