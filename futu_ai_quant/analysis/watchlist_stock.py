@@ -95,7 +95,7 @@ def analyze_watchlist_stock(
     attach_data_quality(enriched, snapshot=snapshot, lot_confirmed=lot_confirmed)
     combined = enriched["combined_swing_signal"]
 
-    # 盘中 ATR 优先用于价带，使 13:05/15:30 区间更贴近日间波动
+    # 盘中 ATR 优先用于价带，使 13:05/15:45 区间更贴近日间波动
     if use_intraday and intraday and not intraday.get("error") and intraday.get("atr") is not None:
         daily_for_plan = {**daily, "atr": intraday.get("atr"), "technical_close": intraday.get("technical_close")}
         enriched_for_plan = {**enriched, "daily": daily_for_plan}

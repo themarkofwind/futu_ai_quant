@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import traceback
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -313,6 +314,7 @@ def run_watchlist_cycle(
             print(f"\n===== 覆盖 {len(decision['recommendations'])}/{len(required_codes)} 只自选 =====\n")
 
         return {
+            "analyzed_at": datetime.now().astimezone().isoformat(),
             "decision": decision,
             "required_codes": required_codes,
             "stocks_by_code": stocks_by_code,

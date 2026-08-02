@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,7 @@ DEFAULT_PAYLOADS_DIR = Path(os.getenv("WATCHLIST_PAYLOADS_DIR", "data/watchlist/
 # 港股三槽默认（北京时间）
 DEFAULT_SLOT_AUCTION = "09:00"
 DEFAULT_SLOT_LUNCH = "13:05"
-DEFAULT_SLOT_PRECLOSE = "15:30"
+DEFAULT_SLOT_PRECLOSE = "15:45"
 
 # 默认对午后/收盘前启用 30 分钟盘中周期
 DEFAULT_INTRADAY_SLOTS = ("lunch", "preclose")
@@ -26,8 +27,19 @@ DEFAULT_INTRADAY_COUNT = 80
 SLOT_LABELS: dict[str, str] = {
     "auction": "盘前竞价",
     "lunch": "午后开盘",
-    "preclose": "收盘前半小时",
+    "preclose": "尾盘提醒",
+    "manual": "手动",
 }
+_WEEKDAY_CN = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+
+def _env_bool(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def watchlist_use_ai() -> bool:
+    """自选是否调用 LLM；由 ``WATCHLIST_USE_AI`` 控制（默认关闭，仅规则引擎）。"""
+    return _env_bool("WATCHLIST_USE_AI", "0")
 
 
 def watchlist_assumed_pl_ratio() -> float | None:
@@ -65,6 +77,35 @@ def load_watchlist_slots() -> list[tuple[str, int, int]]:
 
 def slot_label(slot_key: str) -> str:
     return SLOT_LABELS.get(slot_key, slot_key)
+
+
+def slot_clock(slot_key: str | None) -> str | None:
+    """返回配置中的槽位时钟 ``HH:MM``；未知/手动则 None。"""
+    if not slot_key or slot_key == "manual":
+        return None
+    for key, hour, minute in load_watchlist_slots():
+        if key == slot_key:
+            return f"{hour:02d}:{minute:02d}"
+    return None
+
+
+def format_watchlist_notify_when(
+    slot_key: str | None = None,
+    slot_label_text: str | None = None,
+    analyzed_at: datetime | str | None = None,
+) -> str:
+    """生成推送用的「哪天 · 哪个时段」文案，如 ``2026-08-02（周日）15:45 · 尾盘提醒``。"""
+    if isinstance(analyzed_at, str) and analyzed_at.strip():
+        try:
+            analyzed_at = datetime.fromisoformat(analyzed_at.strip())
+        except ValueError:
+            analyzed_at = None
+    now = analyzed_at if isinstance(analyzed_at, datetime) else datetime.now()
+    weekday = _WEEKDAY_CN[now.weekday()]
+    day = now.strftime("%Y-%m-%d")
+    clock = slot_clock(slot_key) or now.strftime("%H:%M")
+    label = (slot_label_text or "").strip() or (slot_label(slot_key) if slot_key else "手动")
+    return f"{day}（{weekday}）{clock} · {label}"
 
 
 def watchlist_intraday_slots() -> set[str]:

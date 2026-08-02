@@ -7,7 +7,7 @@
 - ``futu-watchlist``（pip install -e . 后）
 
 按港股三槽推送：盘前竞价 / 午后开盘 / 收盘前半小时。
-不含个人持仓与成交数据；PushPlus 默认走群组 ``PUSHPLUS_TOPIC``。
+不含个人持仓与成交数据；通知通道由 ``NOTIFY_CHANNEL`` 决定。
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from futu_ai_quant.config.watchlist import (
     SLOT_LABELS,
     load_watchlist_codes,
     slot_label,
+    watchlist_use_ai,
 )
 from futu_ai_quant.llm.cli import add_llm_cli_arguments, apply_llm_cli_overrides, log_llm_runtime_config
 from futu_ai_quant.llm.client import create_llm_client
@@ -34,11 +35,17 @@ from futu_ai_quant.market.watchlist_schedule import (
     seconds_until,
     should_run_watchlist_slot,
 )
-from futu_ai_quant.notify.pushplus import (
+from futu_ai_quant.notify.decision_notify import (
     notify_watchlist_decision,
+    notify_channel,
+    notify_channel_label,
+    notify_is_configured,
+)
+from futu_ai_quant.notify.pushplus import (
     pushplus_is_configured,
     send_pushplus,
 )
+from futu_ai_quant.notify.wecom import send_wecom
 from futu_ai_quant.pipeline.watchlist_cycle import run_watchlist_cycle
 from futu_ai_quant.utils.logging import log
 
@@ -71,25 +78,27 @@ def parse_args() -> argparse.Namespace:
         "--ai",
         dest="use_ai",
         action="store_true",
-        help="启用 LLM 分析（默认）",
+        help="强制启用 LLM（覆盖 .env WATCHLIST_USE_AI）",
     )
     ai_group.add_argument(
         "--no-ai",
         dest="use_ai",
         action="store_false",
-        help="仅使用规则引擎，不调用 LLM",
+        help="强制仅规则引擎（覆盖 .env WATCHLIST_USE_AI）",
     )
-    parser.set_defaults(use_ai=True)
+    parser.set_defaults(use_ai=None)
     parser.add_argument(
         "--no-push",
         action="store_true",
-        help="禁用 PushPlus 推送",
+        help="禁用通知推送",
     )
     parser.add_argument(
         "--test-pushplus",
         action="store_true",
         help="发送一条自选测试推送后退出（不连接 OpenD）",
     )
+    parser.add_argument("--test-wecom", action="store_true", help="发送企微机器人测试消息后退出")
+    parser.add_argument("--test-notify", action="store_true", help="按 NOTIFY_CHANNEL 测试通知后退出")
     add_llm_cli_arguments(parser)
     return parser.parse_args()
 
@@ -161,16 +170,31 @@ def main() -> None:
         else:
             log("PushPlus", f"测试推送失败: {msg}")
         return
+    if args.test_wecom:
+        ok, msg = send_wecom("自选分析测试", "企微自选通路配置正常。")
+        log("企微", f"测试推送{'成功' if ok else '失败'}: {msg}")
+        return
+    if args.test_notify:
+        if not notify_is_configured():
+            log("通知", f"{notify_channel_label()} 未配置")
+            return
+        if notify_channel() == "wecom":
+            ok, msg = send_wecom("自选分析测试", "通知通道配置正常。")
+        else:
+            ok, msg = send_pushplus("自选分析测试", "通知通道配置正常。")
+        log("通知", f"{notify_channel_label()} 测试推送{'成功' if ok else '失败'}: {msg}")
+        return
 
     codes = load_watchlist_codes(codes_arg=args.codes, codes_file=args.codes_file)
-    use_ai = bool(args.use_ai)
-    do_push = (not args.no_push) and pushplus_is_configured()
+    use_ai = bool(args.use_ai) if args.use_ai is not None else watchlist_use_ai()
+    do_push = (not args.no_push) and notify_is_configured()
 
     if use_ai:
         log_llm_runtime_config()
         ai_client = create_llm_client()
     else:
-        log("规则", "已指定 --no-ai，跳过 LLM，仅用规则引擎")
+        source = "--no-ai" if args.use_ai is False else "WATCHLIST_USE_AI=0"
+        log("规则", f"已关闭 AI（{source}），仅用规则引擎")
         ai_client = None
 
     host = os.getenv("FUTU_OPEND_HOST", "127.0.0.1")
@@ -185,10 +209,9 @@ def main() -> None:
         log("自选", f"标的 ({len(codes)}): {', '.join(codes)}")
         log("循环", "交易日门禁=OpenD request_trading_days（跳过假期；半日市跳过午后槽）")
         if do_push:
-            topic = os.getenv("PUSHPLUS_TOPIC", "").strip()
-            log("PushPlus", f"已启用（{'群组 ' + topic if topic else '一对一'}）")
+            log("通知", f"已启用：{notify_channel_label()}")
         else:
-            log("PushPlus", "未推送（未配置或 --no-push）")
+            log("通知", "未推送（未配置或 --no-push）")
 
         if args.once:
             slot_key, slot_label_text = _resolve_slot(args)

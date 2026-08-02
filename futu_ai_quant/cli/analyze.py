@@ -12,7 +12,7 @@
 - ``FUTU_OPEND_HOST`` / ``FUTU_OPEND_PORT``：OpenD 地址
 - ``DEEPSEEK_API_KEY`` / ``DEEPSEEK_BASE_URL``：AI 决策（``--no-ai`` 时可省略 Key）
 - ``FUTU_TRADE_UNLOCK_PWD``：实盘持仓查询解锁（可选）
-- ``PUSHPLUS_ENABLED`` / ``PUSHPLUS_TOKEN``：持仓分析完成后推送微信（可选）
+- ``NOTIFY_CHANNEL``：通知通道（``pushplus`` 或 ``wecom``）
 
 外部 API
 --------
@@ -36,17 +36,23 @@ from futu_ai_quant.brokers.futu.positions import maybe_unlock_trade
 from futu_ai_quant.llm.client import create_llm_client
 from futu_ai_quant.llm.cli import add_llm_cli_arguments, apply_llm_cli_overrides, log_llm_runtime_config
 from futu_ai_quant.market.session import resolve_analysis_interval
-from futu_ai_quant.notify.pushplus import (
+from futu_ai_quant.notify.decision_notify import (
     notify_analyze_decision,
+    notify_channel,
+    notify_channel_label,
+    notify_is_configured,
+)
+from futu_ai_quant.notify.pushplus import (
     pushplus_is_configured,
     send_pushplus,
 )
+from futu_ai_quant.notify.wecom import send_wecom, wecom_is_configured
 from futu_ai_quant.pipeline.cycle import run_analysis_cycle
 from futu_ai_quant.utils.logging import log
 
 
 def parse_args() -> argparse.Namespace:
-    """解析分析 CLI 参数（``--once``、``--no-ai``、``--test-pushplus``）。"""
+    """解析分析 CLI 参数。"""
     parser = argparse.ArgumentParser(description="港股持仓量化分析")
     parser.add_argument(
         "--once",
@@ -63,6 +69,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="发送一条测试 PushPlus 微信推送后退出（不连接 OpenD）",
     )
+    parser.add_argument("--test-wecom", action="store_true", help="发送企微机器人测试消息后退出")
+    parser.add_argument("--test-notify", action="store_true", help="按 NOTIFY_CHANNEL 测试通知后退出")
     add_llm_cli_arguments(parser)
     return parser.parse_args()
 
@@ -99,6 +107,20 @@ def main() -> None:
         else:
             log("PushPlus", f"测试推送失败: {msg}")
         return
+    if args.test_wecom:
+        ok, msg = send_wecom("持仓分析测试", "企微配置正常，futu-analyze 完成后可推送决策摘要到群。")
+        log("企微", f"测试推送{'成功' if ok else '失败'}: {msg}")
+        return
+    if args.test_notify:
+        if not notify_is_configured():
+            log("通知", f"{notify_channel_label()} 未配置")
+            return
+        if notify_channel() == "wecom":
+            ok, msg = send_wecom("持仓分析测试", "通知通道配置正常。")
+        else:
+            ok, msg = send_pushplus("持仓分析测试", "通知通道配置正常。")
+        log("通知", f"{notify_channel_label()} 测试推送{'成功' if ok else '失败'}: {msg}")
+        return
 
     host = os.getenv("FUTU_OPEND_HOST", "127.0.0.1")
     port = int(os.getenv("FUTU_OPEND_PORT", "11111"))
@@ -117,8 +139,8 @@ def main() -> None:
         quote_ctx = OpenQuoteContext(host=host, port=port)
         trade_ctx = OpenHKTradeContext(filter_trdmarket=TrdMarket.HK, host=host, port=port)
         log("连接", "行情与交易上下文初始化完成")
-        if pushplus_is_configured():
-            log("PushPlus", "已启用：每轮分析成功后推送微信摘要")
+        if notify_is_configured():
+            log("通知", f"已启用：{notify_channel_label()} 每轮分析成功后推送摘要")
 
         maybe_unlock_trade(trade_ctx)
 

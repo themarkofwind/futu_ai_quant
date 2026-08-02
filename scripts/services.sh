@@ -5,18 +5,14 @@
 #   ./scripts/services.sh <start|stop|restart|status|logs> [服务...]
 #
 # 服务名（可多选，空格或逗号分隔；默认 all）：
-#   analyze | holdings | main   持仓分析（cli.analyze）
-#   watchlist                   自选三槽
-#   intraday | pair              日内做 T（华虹实时 + 多标的轮询）
-#   all                         以上全部
+#   analyze | holdings | main     持仓分析
+#   watchlist                     自选三槽（是否 AI 见 .env WATCHLIST_USE_AI）
+#   intraday | pair              → intraday（日内做 T）
+#   all                           analyze + watchlist + intraday
 #
 # 示例：
 #   ./scripts/services.sh start
-#   ./scripts/services.sh start analyze watchlist
-#   ./scripts/services.sh restart intraday
-#   ./scripts/services.sh stop analyze,watchlist
-#   ./scripts/services.sh status
-#   ./scripts/services.sh logs analyze
+#   ./scripts/services.sh restart watchlist intraday
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -34,7 +30,7 @@ else
   PYTHON="$(command -v python)"
 fi
 
-# name|module|logfile|extra_pgrep_regex（可选，匹配旧启动方式如 main.py）
+# name|module|logfile|extra_pgrep
 SERVICES=(
   "analyze|futu_ai_quant.cli.analyze|analyze.log|main\\.py"
   "watchlist|futu_ai_quant.cli.watchlist|watchlist.log|"
@@ -53,17 +49,15 @@ usage() {
   logs      tail -f 日志（Ctrl+C 退出）
 
 服务（可多选，空格或逗号分隔；省略则为 all）:
-  analyze     持仓分析（别名: holdings, main）
-  watchlist   自选股三槽
-  intraday    日内做 T（别名: pair）
-  all         以上全部
+  analyze    持仓分析（别名: holdings, main）
+  watchlist  自选三槽（AI 开关：.env 中 WATCHLIST_USE_AI）
+  intraday   日内做 T（别名: pair；规范名 intraday）
+  all        analyze + watchlist + intraday
 
 示例:
   $(basename "$0") start
-  $(basename "$0") start analyze watchlist
-  $(basename "$0") restart intraday
-  $(basename "$0") stop analyze,watchlist
-  $(basename "$0") logs analyze
+  $(basename "$0") restart watchlist intraday
+  $(basename "$0") status watchlist
 
 项目目录: $ROOT
 Python:   $PYTHON
@@ -72,11 +66,11 @@ EOF
 
 canonicalize() {
   local t
-  t="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  t="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr '-' '_')"
   case "$t" in
     analyze|holdings|main|holding) echo analyze ;;
     watchlist|watch) echo watchlist ;;
-    intraday|intradary|pair|t) echo intraday ;;
+    intraday|intradary|intraday_t|pair|t) echo intraday ;;
     all) echo all ;;
     *)
       echo "未知服务: $1（可选 analyze / watchlist / intraday / all）" >&2
@@ -104,7 +98,6 @@ resolve_targets() {
     raw=(all)
   else
     for arg in "$@"; do
-      # 兼容逗号分隔；Bash 3.2 无手动拆分
       arg="${arg//,/ }"
       for part in $arg; do
         [[ -z "$part" ]] && continue
@@ -171,6 +164,7 @@ pids_for() {
     done < <(pgrep -f "[p]ython.*${extra}" 2>/dev/null || true)
   fi
   if [[ -n "$out" ]]; then
+    # shellcheck disable=SC2086
     printf '%s\n' $out
   fi
 }
@@ -228,6 +222,7 @@ stop_one() {
   done
   if is_running "$SVC_MODULE" "$SVC_EXTRA"; then
     pids="$(pids_for "$SVC_MODULE" "$SVC_EXTRA")"
+    # shellcheck disable=SC2086
     kill -9 $pids 2>/dev/null || true
   fi
   rm -f "$SVC_PIDFILE"

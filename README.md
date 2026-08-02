@@ -1,6 +1,6 @@
 # futu_ai_quant
 
-港股持仓量化分析与模拟交易系统。连接本地 [Futu OpenD](https://openapi.futunn.com/) 拉取持仓与行情，经技术指标、动态风控与五策略集成后，调用 **LLM**（默认 DeepSeek）生成结构化建议；可用本地模拟跟踪绩效。持仓分析可经 **PushPlus** 一对一推微信；自选股定时分析（无个人持仓）可推群组；日内 T+0 监控经 **Bark** 推 iPhone。
+港股持仓量化分析与模拟交易系统。连接本地 [Futu OpenD](https://openapi.futunn.com/) 拉取持仓与行情，经技术指标、动态风控与五策略集成后，调用 **LLM**（默认 DeepSeek）生成结构化建议；可用本地模拟跟踪绩效。持仓/自选分析摘要经 **PushPlus** 或 **企微群机器人**（`NOTIFY_CHANNEL` 二选一）推送；日内 T+0 监控经 **Bark** 推 iPhone。
 
 开发细节见 [docs/GUIDE.md](docs/GUIDE.md)。完整环境变量见 [.env.example](.env.example)。
 
@@ -10,8 +10,8 @@
 
 | 入口 | 作用 |
 |------|------|
-| `main.py` / `futu-analyze` | 持仓分析 + AI/规则决策 → `data/payloads/`、`data/decisions/`；PushPlus **一对一**（不含群） |
-| `futu-watchlist` | 自选股分析（无个人持仓）→ `data/watchlist/`；港股三槽 + 交易日门禁 + PushPlus |
+| `main.py` / `futu-analyze` | 持仓分析 + AI/规则决策 → `data/payloads/`、`data/decisions/`；摘要推送（PushPlus 一对一 / 企微群） |
+| `futu-watchlist` | 自选股分析（无个人持仓）→ `data/watchlist/`；港股三槽 + 交易日门禁 + 摘要推送 |
 | `sim_trader.py` / `futu-sim` | 按决策本地模拟撮合与绩效（Sharpe、回撤等） |
 | `futu-backtest` | 历史日 K 回放规则信号（不调 LLM） |
 | `futu-intraday-t` | 单标的日内 T+0 实时监控 + Bark（默认华虹；OpenD `market_state` 门禁） |
@@ -132,9 +132,13 @@ FUTU_OPEND_HOST=127.0.0.1
 FUTU_OPEND_PORT=11111
 DEEPSEEK_API_KEY=sk-你的key
 
-PUSHPLUS_ENABLED=1
-PUSHPLUS_TOKEN=从pushplus.plus复制的token
-PUSHPLUS_TOPIC=自选群组编码          # 仅 futu-watchlist；持仓分析强制一对一
+NOTIFY_CHANNEL=wecom                 # pushplus | wecom
+WECOM_ENABLED=1
+WECOM_WEBHOOK_URL=企微群机器人Webhook完整URL
+# 或：WECOM_WEBHOOK_KEY=仅key
+
+# 若用 PushPlus：NOTIFY_CHANNEL=pushplus + PUSHPLUS_ENABLED/TOKEN
+# PUSHPLUS_TOPIC=自选群组编码        # 仅 PushPlus 自选；持仓强制一对一
 
 # cp watchlist_codes.example.json data/watchlist/codes.json
 
@@ -144,7 +148,7 @@ BARK_ENABLED=1
 BARK_DEVICE_KEY=从Bark_App复制的key  # 只填 key，不要整段 URL
 ```
 
-`.env` **不要提交到 Git**。服务器需能访问 LLM API；用 PushPlus 时需访问 `www.pushplus.plus`，用 Bark 时需访问 `api.day.app`。
+`.env` **不要提交到 Git**。服务器需能访问 LLM API；用 PushPlus 时需访问 `www.pushplus.plus`，用企微时需访问 `qyapi.weixin.qq.com`，用 Bark 时需访问 `api.day.app`。
 
 ### 5. 验证是否跑通
 
@@ -158,15 +162,18 @@ PYTHONUNBUFFERED=1 python -u main.py --once --no-ai
 # ② AI 决策（需已配置 DEEPSEEK_API_KEY 等）
 PYTHONUNBUFFERED=1 python -u main.py --once
 
-# ③ PushPlus 微信推送测试
-python -m futu_ai_quant.cli.analyze --test-pushplus          # 持仓一对一
-python -m futu_ai_quant.cli.watchlist --test-pushplus        # 自选（可走群组）
+# ③ 摘要推送测试（按 NOTIFY_CHANNEL；也可分别测）
+python -m futu_ai_quant.cli.analyze --test-notify
+python -m futu_ai_quant.cli.watchlist --test-notify
+# python -m futu_ai_quant.cli.analyze --test-wecom
+# python -m futu_ai_quant.cli.analyze --test-notify
+python -m futu_ai_quant.cli.analyze --test-wecom
+python -m futu_ai_quant.cli.analyze --test-pushplus
 
 # ④ 自选股立刻跑一轮（无个人持仓；需 OpenD）
 # cp watchlist_codes.example.json data/watchlist/codes.json
-PYTHONUNBUFFERED=1 python -u -m futu_ai_quant.cli.watchlist --once --no-ai
-# 或带 LLM：
-# PYTHONUNBUFFERED=1 python -u -m futu_ai_quant.cli.watchlist --once --ai
+# 是否 AI 默认关（WATCHLIST_USE_AI=0）；可用 --ai 临时开启
+PYTHONUNBUFFERED=1 python -u -m futu_ai_quant.cli.watchlist --once
 
 # ⑤ Bark 推送测试（需已配置 BARK_*）
 python -m futu_ai_quant.cli.intraday_t --test-bark
@@ -193,6 +200,7 @@ chmod +x scripts/services.sh   # 首次
 
 # 按类型选择（空格或逗号均可）
 ./scripts/services.sh start analyze watchlist
+./scripts/services.sh restart watchlist       # 是否 AI 见 .env WATCHLIST_USE_AI
 ./scripts/services.sh restart intraday
 ./scripts/services.sh stop analyze,watchlist
 ./scripts/services.sh logs analyze
@@ -201,7 +209,7 @@ chmod +x scripts/services.sh   # 首次
 | 参数 | 含义 | 日志 |
 |------|------|------|
 | `analyze`（别名 `holdings` / `main`） | 持仓分析 | `data/logs/analyze.log` |
-| `watchlist` | 自选三槽 | `data/logs/watchlist.log` |
+| `watchlist` | 自选三槽（默认无 AI，见 `WATCHLIST_USE_AI`） | `data/logs/watchlist.log` |
 | `intraday`（别名 `pair`） | 日内做 T | `data/logs/intraday.log` |
 | `all`（默认） | 以上全部 | |
 
@@ -233,9 +241,13 @@ source .venv/bin/activate   # 或 conda activate futu
 
 python main.py --once --no-ai
 python main.py --once
+python -m futu_ai_quant.cli.analyze --test-notify
+python -m futu_ai_quant.cli.analyze --test-wecom
 python -m futu_ai_quant.cli.analyze --test-pushplus
-python -m futu_ai_quant.cli.watchlist --once --no-ai
-python -m futu_ai_quant.cli.watchlist --once --ai
+python -m futu_ai_quant.cli.watchlist --once
+# python -m futu_ai_quant.cli.watchlist --once --no-ai   # 临时覆盖 WATCHLIST_USE_AI
+python -m futu_ai_quant.cli.watchlist --test-notify
+python -m futu_ai_quant.cli.watchlist --test-wecom
 python -m futu_ai_quant.cli.watchlist --test-pushplus
 python -m futu_ai_quant.cli.intraday_t --test-bark
 python sim_trader.py --source main --once
@@ -313,9 +325,8 @@ ruff check futu_ai_quant tests
 **行情权限被抢 / 订阅异常**  
 同账号多端会互踢最高档行情。服务器设 `auto_hold_quote_right=1`，避免手机端连续抢权限。
 
-**PushPlus 微信收不到**  
-检查 `PUSHPLUS_ENABLED=1`、`PUSHPLUS_TOKEN`、已实名；服务器能访问 `www.pushplus.plus`。持仓用 `analyze --test-pushplus`（一对一）；自选群组用 `watchlist --test-pushplus` 并确认 `PUSHPLUS_TOPIC` 与成员已扫码入组。
-
+**摘要推送收不到（PushPlus / 企微）**  
+确认 `NOTIFY_CHANNEL` 与对应凭据：`pushplus` 需 `PUSHPLUS_ENABLED/TOKEN`；`wecom` 需 `WECOM_ENABLED` 与 Webhook。服务器分别能访问 `www.pushplus.plus` 或 `qyapi.weixin.qq.com`。用 `analyze --test-notify` / `watchlist --test-notify` 测通路。
 **Bark 收不到**  
 检查 `BARK_ENABLED=1`、`BARK_DEVICE_KEY` 仅为 key 而非完整 URL；服务器能访问 `api.day.app`；先跑 `--test-bark`。注意：`main.py` 不发 Bark，只有日内监控 CLI 会推送。
 
