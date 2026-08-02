@@ -125,40 +125,23 @@ cp .env.example .env
 nano .env   # 或 vim
 ```
 
-**必配 / 常用项：**
+**必配 / 常用项（完整说明见 `.env.example`）：**
 
 ```bash
-# ---- OpenD（与本机 OpenD 一致）----
 FUTU_OPEND_HOST=127.0.0.1
 FUTU_OPEND_PORT=11111
-FUTU_TRADE_UNLOCK_PWD=交易解锁密码   # 查实盘持仓建议填写
-
-# ---- LLM（跑 AI 决策时需要；--no-ai 可跳过）----
 DEEPSEEK_API_KEY=sk-你的key
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-# 或：LLM_PROVIDER=openai / anthropic / gemini 等，见 .env.example
 
-# ---- 持仓分析 PushPlus 一对一（可选；不会进群）----
 PUSHPLUS_ENABLED=1
 PUSHPLUS_TOKEN=从pushplus.plus复制的token
-# PUSHPLUS_TOPIC 只给自选分析用，见下
+PUSHPLUS_TOPIC=自选群组编码          # 仅 futu-watchlist；持仓分析强制一对一
 
-# ---- 自选股定时分析 futu-watchlist（无个人持仓，可推群）----
 # cp watchlist_codes.example.json data/watchlist/codes.json
-PUSHPLUS_TOPIC=你的群组编码
-# WATCHLIST_CODES=HK.00700,HK.09988
 
-# ---- 日内做 T + Bark（可选）----
-INTRADAY_T_CODE=HK.09988
-# INTRADAY_T_CODES=HK.09988,HK.00700
-
+INTRADAY_T_CODE=HK.01347             # 实时做 T（华虹）
+INTRADAY_T_CODES=HK.09988,HK.00700   # 轮询（阿里,腾讯）
 BARK_ENABLED=1
-BARK_DEVICE_KEY=从Bark_App复制的key
-# App 里地址形如 https://api.day.app/<device_key>/推送内容
-# 只填中间的 device_key，不要整段 URL
-BARK_SERVER=https://api.day.app
-BARK_GROUP=日内做T
-BARK_LEVEL=timeSensitive
+BARK_DEVICE_KEY=从Bark_App复制的key  # 只填 key，不要整段 URL
 ```
 
 `.env` **不要提交到 Git**。服务器需能访问 LLM API；用 PushPlus 时需访问 `www.pushplus.plus`，用 Bark 时需访问 `api.day.app`。
@@ -197,25 +180,40 @@ python -m futu_ai_quant.cli.intraday_t --replay --code HK.09988
 
 ### 6. 日常运行
 
+**推荐：常驻脚本**（持仓 / 自选 / 日内做 T）
+
+```bash
+chmod +x scripts/services.sh   # 首次
+
+./scripts/services.sh start                 # 启动全部（analyze + watchlist + intraday）
+./scripts/services.sh restart
+./scripts/services.sh status
+./scripts/services.sh logs
+./scripts/services.sh stop
+
+# 按类型选择（空格或逗号均可）
+./scripts/services.sh start analyze watchlist
+./scripts/services.sh restart intraday
+./scripts/services.sh stop analyze,watchlist
+./scripts/services.sh logs analyze
+```
+
+| 参数 | 含义 | 日志 |
+|------|------|------|
+| `analyze`（别名 `holdings` / `main`） | 持仓分析 | `data/logs/analyze.log` |
+| `watchlist` | 自选三槽 | `data/logs/watchlist.log` |
+| `intraday`（别名 `pair`） | 日内做 T | `data/logs/intraday.log` |
+| `all`（默认） | 以上全部 | |
+
+优先使用项目内 `.venv/bin/python`。
+
+前台调试：
+
 ```bash
 source .venv/bin/activate
-
-# 持仓分析常驻（盘中约 30 分钟、盘外约 4 小时一轮）；PushPlus 一对一
 PYTHONUNBUFFERED=1 python -u main.py
-
-# 自选股三槽守护（09:00 / 13:05 / 15:30 北京时间，周一至五）
 PYTHONUNBUFFERED=1 python -u -m futu_ai_quant.cli.watchlist
-
-# 日内 T+0：华虹实时 + 阿里/腾讯轮询（Bark；改 .env 热加载，无需重启）
 PYTHONUNBUFFERED=1 python -u -m futu_ai_quant.cli.intraday_pair
-# 或分开跑：
-# python -u -m futu_ai_quant.cli.intraday_t
-# python -u -m futu_ai_quant.cli.intraday_watch
-
-# 后台示例
-nohup python -u main.py > analyze.log 2>&1 &
-nohup python -u -m futu_ai_quant.cli.watchlist > watchlist.log 2>&1 &
-nohup python -u -m futu_ai_quant.cli.intraday_pair > intraday.log 2>&1 &
 ```
 
 模拟交易：
