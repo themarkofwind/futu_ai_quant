@@ -1,6 +1,6 @@
 # futu_ai_quant
 
-港股持仓量化分析与模拟交易系统。连接本地 [Futu OpenD](https://openapi.futunn.com/) 拉取持仓与行情，经技术指标、动态风控与五策略集成后，调用 **LLM**（默认 DeepSeek）生成结构化建议；可用本地模拟跟踪绩效。持仓/自选分析摘要经 **PushPlus** 或 **企微群机器人**（`NOTIFY_CHANNEL` 二选一）推送；日内 T+0 监控经 **Bark** 推 iPhone。
+港股持仓量化分析与模拟交易系统。连接本地 [Futu OpenD](https://openapi.futunn.com/) 拉取持仓与行情，经技术指标、动态风控与五策略集成后，调用 **LLM**（默认 DeepSeek）生成结构化建议；可用本地模拟跟踪绩效。持仓/自选分析摘要经 **PushPlus** 或 **企微群机器人**（`NOTIFY_CHANNEL` 二选一）推送；日内 T+0 监控经 **Bark** 推 iPhone，信号同时可推 **企微群**（`WECOM_*` / `INTRADAY_T_WECOM`）。
 
 开发细节见 [docs/GUIDE.md](docs/GUIDE.md)。完整环境变量见 [.env.example](.env.example)。
 

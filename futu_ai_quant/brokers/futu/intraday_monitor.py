@@ -28,12 +28,7 @@ from futu_ai_quant.indicators.intraday import (
     session_vwap_from_klines,
 )
 from futu_ai_quant.market.session import market_of_code, session_date_prefix
-from futu_ai_quant.notify.bark import (
-    bark_is_configured,
-    bark_notify_warning,
-    bark_title_for_signal,
-    send_bark_async,
-)
+from futu_ai_quant.notify.intraday_notify import notify_channels_label, notify_intraday_signal
 from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.strategy.intraday_t import (
     IntradayTContext,
@@ -374,20 +369,12 @@ class IntradayTMonitor:
                 ctx=self.ctx,
             )
             log_intraday_t(f"{header}\n{event.message}")
-            self._maybe_notify_bark(event, header)
+            self._maybe_notify(event, header)
 
-    def _maybe_notify_bark(self, event: SignalEvent, header: str) -> None:
-        if not bark_is_configured():
-            return
-        notify_kinds = {
-            SignalKind.SELL,
-            SignalKind.BUY_T,
-            SignalKind.BUY_BACK,
-            SignalKind.SELL_OFF,
-        }
-        if bark_notify_warning():
-            notify_kinds.add(SignalKind.WARNING)
-        if event.kind not in notify_kinds:
+    def _maybe_notify(self, event: SignalEvent, header: str) -> None:
+        from futu_ai_quant.notify.intraday_notify import intraday_notify_kinds
+
+        if event.kind not in intraday_notify_kinds():
             return
 
         sig = f"{event.kind}:{event.price}"
@@ -397,9 +384,7 @@ class IntradayTMonitor:
         self._last_bark_sig = sig
         self._last_bark_at = now
 
-        title = bark_title_for_signal(event.kind.value, self.code)
-        body = f"{header}\n{event.message}"
-        send_bark_async(title, body)
+        notify_intraday_signal(self.code, event, header)
 
     def maybe_print_status(self, *, force: bool = False) -> None:
         now = time.time()
@@ -459,6 +444,6 @@ class IntradayTMonitor:
             f"监控启动 | 标的={self.code} | 单次={self.ctx.lot_size} 股 | "
             f"目标净价差>={self.ctx.target_spread} {self.ctx.currency} | 状态={self.ctx.state.value} | "
             f"当前模式={mode} | 现价=秒级推送 | 指标=5分钟收盘锁定 | 补帧评估={tick_note} | "
-            f"Bark={'开启' if bark_is_configured() else '关闭'} | "
+            f"补帧评估={tick_note} | 通知={notify_channels_label()} | "
             f"执行门禁=OpenD market_state(MORNING/AFTERNOON) | {self.session_gate.describe(self.code)}"
         )

@@ -34,15 +34,13 @@ from futu_ai_quant.config.env_reload import EnvReloader, format_settings_changes
 from futu_ai_quant.market.codes import normalize_stock_code
 from futu_ai_quant.market.intraday_session_gate import wait_for_trading_session
 from futu_ai_quant.market.session import currency_of_market, market_of_code
-from futu_ai_quant.notify.bark import (
-    bark_is_configured,
-    bark_notify_warning,
-    bark_title_for_signal,
-    send_bark,
-    send_bark_async,
+from futu_ai_quant.notify.bark import bark_is_configured, send_bark
+from futu_ai_quant.notify.intraday_notify import (
+    notify_channels_label,
+    notify_intraday_signal,
 )
 from futu_ai_quant.strategy import intraday_t_settings as its
-from futu_ai_quant.strategy.intraday_t import IntradayTContext, SignalKind
+from futu_ai_quant.strategy.intraday_t import IntradayTContext
 from futu_ai_quant.strategy.intraday_t_cost import resolve_intraday_t_target_spread
 from futu_ai_quant.strategy.intraday_t_lot import resolve_intraday_t_lot_size
 from futu_ai_quant.strategy.intraday_t_replay import latest_trading_day, replay_intraday_t
@@ -140,26 +138,11 @@ def _run_replay(args: argparse.Namespace, code: str, ctx: IntradayTContext) -> i
     port = int(os.getenv("FUTU_OPEND_PORT", "11111"))
     quote_ctx: OpenQuoteContext | None = None
 
-    notify_kinds = {
-        SignalKind.SELL,
-        SignalKind.BUY_T,
-        SignalKind.BUY_BACK,
-        SignalKind.SELL_OFF,
-    }
-    if bark_notify_warning():
-        notify_kinds.add(SignalKind.WARNING)
-
     def _on_event(event, header: str) -> None:
         log_intraday_t(f"[回放] {header}\n{event.message}")
-        if not bark_is_configured() or event.kind not in notify_kinds:
+        if args.no_bark:
             return
-        title = bark_title_for_signal(event.kind.value, code)
-        # 回放结束后进程立即退出，异步推送会被 daemon 线程掐断
-        ok, msg = send_bark(title, f"{header}\n{event.message}")
-        if ok:
-            log_intraday_t(f"Bark 推送成功: {title}")
-        else:
-            log_intraday_t(f"Bark 推送失败: {msg}")
+        notify_intraday_signal(code, event, header, sync=True)
 
     try:
         log("连接", f"正在连接 Futu OpenD {host}:{port}（历史回放）...")
@@ -190,7 +173,7 @@ def _run_replay(args: argparse.Namespace, code: str, ctx: IntradayTContext) -> i
         log_intraday_t(
             f"开始历史回放 | 标的={code} | 交易日={replay_day} | "
             f"拉取K线={len(kline)} 根 | 节拍={args.replay_speed:g}s | "
-            f"Bark={'开启' if bark_is_configured() else '关闭'}"
+            f"通知={notify_channels_label()}"
         )
 
         result = replay_intraday_t(

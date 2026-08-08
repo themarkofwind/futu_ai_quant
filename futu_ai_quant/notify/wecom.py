@@ -392,3 +392,25 @@ def log_wecom_send(ok: bool, title: str, msg: str) -> None:
         log("企微", f"推送成功: {title}")
     else:
         log("企微", f"推送失败: {msg}")
+
+
+def send_wecom_async(
+    title: str,
+    content: str,
+    *,
+    msg_type: str | None = None,
+    content_is_full_markdown: bool = False,
+) -> None:
+    """后台线程发送企微，避免阻塞行情回调。"""
+    import threading
+
+    def _worker() -> None:
+        ok, msg = send_wecom(
+            title,
+            content,
+            msg_type=msg_type,
+            content_is_full_markdown=content_is_full_markdown,
+        )
+        log_wecom_send(ok, title, msg)
+
+    threading.Thread(target=_worker, daemon=True, name="wecom-push").start()
