@@ -55,6 +55,41 @@ def min_target_spread_from_fees(
     return _round_up_spread((fees / lot_size) * cost_ratio)
 
 
+def boll_width_target_spread(
+    boll_upper: float | None,
+    boll_lower: float | None,
+    *,
+    ratio: float | None = None,
+) -> float:
+    """按布林带宽比例估算目标价差；带宽无效时返回 0。"""
+    if ratio is None:
+        ratio = its.INTRADAY_T_SPREAD_BOLL_RATIO
+    if ratio <= 0 or boll_upper is None or boll_lower is None:
+        return 0.0
+    width = boll_upper - boll_lower
+    if width <= 0:
+        return 0.0
+    return _round_up_spread(width * ratio)
+
+
+def resolve_entry_target_spread(
+    base_spread: float,
+    *,
+    boll_upper: float | None = None,
+    boll_lower: float | None = None,
+    boll_ratio: float | None = None,
+) -> float:
+    """
+    开仓时锁定有效目标价差：``max(base, 布林带宽 × 比例)``。
+
+    ``base`` 通常已是 ``max(手动配置, 费用地板)``。
+    """
+    boll_floor = boll_width_target_spread(
+        boll_upper, boll_lower, ratio=boll_ratio
+    )
+    return max(float(base_spread), boll_floor)
+
+
 def resolve_price_for_cost(quote_ctx: OpenQuoteContext, code: str) -> float | None:
     snapshot = fetch_snapshot_map(quote_ctx, [code]).get(code, {})
     return safe_float(snapshot.get("last_price")) or safe_float(snapshot.get("cur_price"))

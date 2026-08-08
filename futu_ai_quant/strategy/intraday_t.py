@@ -15,6 +15,7 @@ from futu_ai_quant.indicators.intraday import (
     normalize_kline_frame,
 )
 from futu_ai_quant.strategy import intraday_t_settings as its
+from futu_ai_quant.strategy.intraday_t_cost import resolve_entry_target_spread
 from futu_ai_quant.utils.numbers import safe_float
 
 
@@ -52,7 +53,13 @@ class IntradayTContext:
     warning_downtrend: bool = False
     lot_size: int = field(default_factory=lambda: its.INTRADAY_T_LOT_SIZE)
     target_spread: float = field(default_factory=lambda: its.INTRADAY_T_TARGET_SPREAD)
+    # 费用/配置下限；开仓时再按布林带宽抬高写入 target_spread。None=与 target_spread 同步
+    configured_spread: float | None = None
     currency: str = "HKD"
+
+    def __post_init__(self) -> None:
+        if self.configured_spread is None:
+            self.configured_spread = self.target_spread
 
     @property
     def sell_price(self) -> float | None:
@@ -238,6 +245,11 @@ def evaluate_intraday_t(
     if ctx.state == IntradayTState.AT_BASE and sell_open_ready and not ctx.warning_uptrend:
         ctx.state = IntradayTState.SHORT_T
         ctx.entry_price = price
+        ctx.target_spread = resolve_entry_target_spread(
+            ctx.configured_spread if ctx.configured_spread is not None else ctx.target_spread,
+            boll_upper=boll_upper,
+            boll_lower=boll_lower,
+        )
         events.append(
             SignalEvent(
                 kind=SignalKind.SELL,
@@ -257,6 +269,11 @@ def evaluate_intraday_t(
     if ctx.state == IntradayTState.AT_BASE and buy_open_ready and not ctx.warning_downtrend:
         ctx.state = IntradayTState.LONG_T
         ctx.entry_price = price
+        ctx.target_spread = resolve_entry_target_spread(
+            ctx.configured_spread if ctx.configured_spread is not None else ctx.target_spread,
+            boll_upper=boll_upper,
+            boll_lower=boll_lower,
+        )
         events.append(
             SignalEvent(
                 kind=SignalKind.BUY_T,
@@ -304,6 +321,8 @@ def evaluate_intraday_t(
             )
             ctx.state = IntradayTState.AT_BASE
             ctx.entry_price = None
+            if ctx.configured_spread is not None:
+                ctx.target_spread = ctx.configured_spread
 
     elif ctx.state == IntradayTState.LONG_T and ctx.entry_price is not None:
         take_profit = price >= (ctx.entry_price + ctx.target_spread)
@@ -338,6 +357,8 @@ def evaluate_intraday_t(
             )
             ctx.state = IntradayTState.AT_BASE
             ctx.entry_price = None
+            if ctx.configured_spread is not None:
+                ctx.target_spread = ctx.configured_spread
 
     return events
 

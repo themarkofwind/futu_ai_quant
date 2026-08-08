@@ -36,7 +36,7 @@ from futu_ai_quant.decision.validation import validate_decision_schema
 from futu_ai_quant.llm.settings import llm_provider
 from futu_ai_quant.market.symbol_names import resolve_symbol_names
 from futu_ai_quant.decision.ai import call_watchlist_llm_decision
-from futu_ai_quant.planning.stock import build_stock_trade_plan, format_watch_triggers
+from futu_ai_quant.planning.stock import build_stock_trade_plan, format_price_band, format_watch_triggers
 from futu_ai_quant.risk.macro_overlay import attach_macro_risk_overlay
 from futu_ai_quant.risk.position_limits import attach_portfolio_risk_limits
 from futu_ai_quant.utils.logging import log
@@ -123,6 +123,9 @@ def _rebuild_watchlist_trade_plans(
                     **daily,
                     "atr": intraday.get("atr"),
                     "technical_close": intraday.get("technical_close") or daily.get("technical_close"),
+                    "boll_upper": intraday.get("boll_upper") or daily.get("boll_upper"),
+                    "boll_mid": intraday.get("boll_mid") or daily.get("boll_mid"),
+                    "boll_lower": intraday.get("boll_lower") or daily.get("boll_lower"),
                 },
             }
         stock["stock_trade_plan"] = build_stock_trade_plan(
@@ -206,10 +209,14 @@ def run_watchlist_cycle(
         )
         trade = enriched.get("stock_trade_plan") or {}
         if trade.get("direction") != "none":
+            band = format_price_band(
+                trade.get("trigger_price_low"),
+                trade.get("trigger_price_high"),
+                trade.get("preferred_trigger_price"),
+            )
             log(
                 "计划",
-                f"{stock['code']} 建议{trade.get('direction')} "
-                f"触发 {trade.get('trigger_price_low')}-{trade.get('trigger_price_high')}",
+                f"{stock['code']} 建议{trade.get('direction')} 触发 {band}",
             )
         else:
             watch_text = format_watch_triggers(trade)

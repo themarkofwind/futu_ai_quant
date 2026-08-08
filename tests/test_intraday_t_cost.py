@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from futu_ai_quant.strategy.intraday_t_cost import (
+    boll_width_target_spread,
     estimate_round_trip_t_fees,
     min_target_spread_from_fees,
+    resolve_entry_target_spread,
     resolve_intraday_t_target_spread,
 )
 
@@ -59,3 +61,12 @@ class TestIntradayTCost:
         )
         assert spread == 1.2
         assert "未启用" in note
+
+    def test_boll_width_target_spread(self) -> None:
+        assert boll_width_target_spread(130.0, 126.0, ratio=0.45) == 1.8
+        assert boll_width_target_spread(130.0, 126.0, ratio=0.0) == 0.0
+        assert boll_width_target_spread(None, 126.0, ratio=0.45) == 0.0
+
+    def test_resolve_entry_uses_max_of_base_and_boll(self) -> None:
+        assert resolve_entry_target_spread(1.2, boll_upper=145.0, boll_lower=138.0) == 3.15
+        assert resolve_entry_target_spread(2.5, boll_upper=130.0, boll_lower=128.0) == 2.5

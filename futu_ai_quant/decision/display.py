@@ -72,10 +72,13 @@ def build_technical_summary(stock: dict[str, Any]) -> str:
         direction = trade_plan.get("direction")
         low = trade_plan.get("trigger_price_low")
         high = trade_plan.get("trigger_price_high")
+        pref = trade_plan.get("preferred_trigger_price")
         if direction == "buy" and low is not None:
-            parts.append(f"买入参考={low}-{high}")
+            band = f"{pref}（{low}-{high}）" if pref is not None else f"{low}-{high}"
+            parts.append(f"买入参考={band}")
         elif direction == "sell" and low is not None:
-            parts.append(f"卖出参考={low}-{high}")
+            band = f"{pref}（{low}-{high}）" if pref is not None else f"{low}-{high}"
+            parts.append(f"卖出参考={band}")
         # 观望时价带放在 tip/参考价行，技术面不重复
     elif trade_plan.get("direction") not in (None, "none"):
         parts.append(

@@ -10,9 +10,13 @@
 #   intraday | pair              → intraday（日内做 T）
 #   all                           analyze + watchlist + intraday
 #
+# 日志按 ISO 周切分：data/logs/{service}_{YYYY}-W{WW}.log
+# 同时维护 {service}.log → 当前周（符号链接）
+#
 # 示例：
 #   ./scripts/services.sh start
 #   ./scripts/services.sh restart watchlist intraday
+#   python -m futu_ai_quant.utils.weeklog split --retire data/logs/watchlist.log
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,11 +34,11 @@ else
   PYTHON="$(command -v python)"
 fi
 
-# name|module|logfile|extra_pgrep
+# name|module|extra_pgrep
 SERVICES=(
-  "analyze|futu_ai_quant.cli.analyze|analyze.log|main\\.py"
-  "watchlist|futu_ai_quant.cli.watchlist|watchlist.log|"
-  "intraday|futu_ai_quant.cli.intraday_pair|intraday.log|"
+  "analyze|futu_ai_quant.cli.analyze|main\\.py"
+  "watchlist|futu_ai_quant.cli.watchlist|"
+  "intraday|futu_ai_quant.cli.intraday_pair|"
 )
 
 usage() {
@@ -46,13 +50,18 @@ usage() {
   stop      停止
   restart   先停再启
   status    查看是否在跑
-  logs      tail -f 日志（Ctrl+C 退出）
+  logs      tail -f 当前周日志（Ctrl+C 退出）
 
 服务（可多选，空格或逗号分隔；省略则为 all）:
   analyze    持仓分析（别名: holdings, main）
   watchlist  自选三槽（AI 开关：.env 中 WATCHLIST_USE_AI）
   intraday   日内做 T（别名: pair；规范名 intraday）
   all        analyze + watchlist + intraday
+
+日志:
+  按 ISO 周切分 → data/logs/{service}_YYYY-Www.log
+  当前周快捷链接 → data/logs/{service}.log
+  拆分旧整文件: $PYTHON -m futu_ai_quant.utils.weeklog --log-dir data/logs split --retire data/logs/watchlist.log
 
 示例:
   $(basename "$0") start
@@ -124,17 +133,18 @@ resolve_targets() {
 
 svc_fields() {
   local name="$1"
-  local row n module logfile extra
+  local row n module extra
   for row in "${SERVICES[@]}"; do
-    IFS='|' read -r n module logfile extra <<EOF
+    IFS='|' read -r n module extra <<EOF
 $row
 EOF
     if [[ "$n" == "$name" ]]; then
       SVC_NAME="$n"
       SVC_MODULE="$module"
-      SVC_LOG="$LOG_DIR/$logfile"
-      SVC_PIDFILE="$RUN_DIR/${n}.pid"
       SVC_EXTRA="$extra"
+      SVC_LOG="$("$PYTHON" -m futu_ai_quant.utils.weeklog --log-dir "$LOG_DIR" path "$SVC_NAME")"
+      SVC_LOG_LINK="$LOG_DIR/${SVC_NAME}.log"
+      SVC_PIDFILE="$RUN_DIR/${n}.pid"
       return 0
     fi
   done
@@ -187,13 +197,19 @@ start_one() {
     return 0
   fi
   rm -f "$SVC_PIDFILE"
-  nohup env PYTHONUNBUFFERED=1 "$PYTHON" -u -m "$SVC_MODULE" \
-    >>"$SVC_LOG" 2>&1 &
-  local pid=$!
-  echo "$pid" >"$SVC_PIDFILE"
-  sleep 0.3
-  if kill -0 "$pid" 2>/dev/null; then
-    echo "[ok]   $SVC_NAME 已启动 (pid: $pid) → $SVC_LOG"
+  # weeklog run：托管子进程，跨周自动切换；{service}.log → 当前周
+  nohup env PYTHONUNBUFFERED=1 "$PYTHON" -u -m futu_ai_quant.utils.weeklog \
+    --log-dir "$LOG_DIR" run "$SVC_NAME" \
+    -- "$PYTHON" -u -m "$SVC_MODULE" \
+    >/dev/null 2>&1 &
+  local wrapper_pid=$!
+  echo "$wrapper_pid" >"$SVC_PIDFILE"
+  sleep 0.5
+  local child_pids
+  child_pids="$(pids_for "$SVC_MODULE" "$SVC_EXTRA" | tr '\n' ' ')"
+  if [[ -n "${child_pids// }" ]] || kill -0 "$wrapper_pid" 2>/dev/null; then
+    echo "[ok]   $SVC_NAME 已启动 (pid: ${child_pids:-$wrapper_pid}) → $SVC_LOG"
+    echo "       链接: $SVC_LOG_LINK"
   else
     echo "[fail] $SVC_NAME 启动失败，请查看 $SVC_LOG" >&2
     rm -f "$SVC_PIDFILE"
@@ -206,13 +222,17 @@ stop_one() {
   svc_fields "$name"
   local pids
   pids="$(pids_for "$SVC_MODULE" "$SVC_EXTRA")"
-  if [[ -z "${pids// }" ]]; then
+  local wrap_pids=""
+  wrap_pids="$(pgrep -f "[p]ython.*-m futu_ai_quant.utils.weeklog .*run ${SVC_NAME}( |$)" 2>/dev/null || true)"
+  if [[ -z "${pids// }" && -z "${wrap_pids// }" ]]; then
     echo "[skip] $SVC_NAME 未在运行"
     rm -f "$SVC_PIDFILE"
     return 0
   fi
   # shellcheck disable=SC2086
-  kill $pids 2>/dev/null || true
+  [[ -n "${pids}" ]] && kill $pids 2>/dev/null || true
+  # shellcheck disable=SC2086
+  [[ -n "${wrap_pids}" ]] && kill $wrap_pids 2>/dev/null || true
   local i
   for i in 1 2 3 4 5; do
     if ! is_running "$SVC_MODULE" "$SVC_EXTRA"; then
@@ -225,6 +245,9 @@ stop_one() {
     # shellcheck disable=SC2086
     kill -9 $pids 2>/dev/null || true
   fi
+  wrap_pids="$(pgrep -f "[p]ython.*-m futu_ai_quant.utils.weeklog .*run ${SVC_NAME}( |$)" 2>/dev/null || true)"
+  # shellcheck disable=SC2086
+  [[ -n "${wrap_pids}" ]] && kill -9 $wrap_pids 2>/dev/null || true
   rm -f "$SVC_PIDFILE"
   echo "[ok]   $SVC_NAME 已停止"
 }

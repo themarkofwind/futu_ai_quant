@@ -121,10 +121,13 @@ def _fmt_price(value: Any) -> str | None:
         return None
 
 
-def _fmt_price_range(low: Any, high: Any) -> str | None:
+def _fmt_price_range(low: Any, high: Any, preferred: Any = None) -> str | None:
     a, b = _fmt_price(low), _fmt_price(high)
     if a is None or b is None:
         return None
+    pref = _fmt_price(preferred)
+    if pref is not None:
+        return f"{pref}（{a}-{b}）"
     return f"{a}-{b}"
 
 
@@ -145,7 +148,11 @@ def _build_price_line(rec: dict[str, Any], tech: str) -> str | None:
     plan = rec.get("stock_trade_plan") or {}
     direction = str(plan.get("direction") or "none")
     if direction not in (None, "", "none"):
-        band = _fmt_price_range(plan.get("trigger_price_low"), plan.get("trigger_price_high"))
+        band = _fmt_price_range(
+            plan.get("trigger_price_low"),
+            plan.get("trigger_price_high"),
+            plan.get("preferred_trigger_price"),
+        )
         if band:
             if direction == "buy":
                 parts.append(f"买入参考 {_buy_price(band)}")
@@ -170,7 +177,11 @@ def _build_price_line(rec: dict[str, Any], tech: str) -> str | None:
         for w in plan.get("watch_triggers") or []:
             if not isinstance(w, dict):
                 continue
-            band = _fmt_price_range(w.get("price_low"), w.get("price_high"))
+            band = _fmt_price_range(
+                w.get("price_low"),
+                w.get("price_high"),
+                w.get("preferred_price"),
+            )
             if not band:
                 continue
             if w.get("side") == "buy":

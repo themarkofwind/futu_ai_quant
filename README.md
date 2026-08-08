@@ -208,9 +208,16 @@ chmod +x scripts/services.sh   # 首次
 
 | 参数 | 含义 | 日志 |
 |------|------|------|
-| `analyze`（别名 `holdings` / `main`） | 持仓分析 | `data/logs/analyze.log` |
-| `watchlist` | 自选三槽（默认无 AI，见 `WATCHLIST_USE_AI`） | `data/logs/watchlist.log` |
-| `intraday`（别名 `pair`） | 日内做 T | `data/logs/intraday.log` |
+| `analyze`（别名 `holdings` / `main`） | 持仓分析 | `data/logs/analyze_YYYY-Www.log`（`analyze.log` → 当前周） |
+| `watchlist` | 自选三槽（默认无 AI，见 `WATCHLIST_USE_AI`） | `data/logs/watchlist_YYYY-Www.log` |
+| `intraday`（别名 `pair`） | 日内做 T | `data/logs/intraday_YYYY-Www.log` |
+
+日志按 **ISO 周**（周一～周日）自动切分，跨周无需重启；旧整文件可拆分：
+
+```bash
+python -m futu_ai_quant.utils.weeklog --log-dir data/logs split --retire \
+  data/logs/watchlist.log data/logs/intraday.log data/logs/analyze.log
+```
 | `all`（默认） | 以上全部 | |
 
 优先使用项目内 `.venv/bin/python`。

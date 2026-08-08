@@ -5,7 +5,11 @@ from typing import Any
 from futu_ai_quant.analysis.portfolio import build_portfolio_risk_overlay
 from futu_ai_quant.config.settings import TRADE_RECENT_STOCK_COUNT
 from futu_ai_quant.planning.option import empty_option_trade_plan
-from futu_ai_quant.planning.stock import empty_stock_trade_plan, format_watch_triggers
+from futu_ai_quant.planning.stock import (
+    empty_stock_trade_plan,
+    format_price_band,
+    format_watch_triggers,
+)
 from futu_ai_quant.utils.numbers import safe_float
 
 
@@ -94,19 +98,21 @@ def build_watchlist_rules_decision(stocks: list[dict[str, Any]]) -> dict[str, An
         action = infer_stock_action(stock)
         trigger_low = stock_plan.get("trigger_price_low")
         trigger_high = stock_plan.get("trigger_price_high")
+        trigger_pref = stock_plan.get("preferred_trigger_price")
         watch_text = format_watch_triggers(stock_plan)
-        if trigger_low is not None and trigger_high is not None:
-            suggested_trigger = f"{trigger_low}-{trigger_high}"
+        band = format_price_band(trigger_low, trigger_high, trigger_pref)
+        if band:
+            suggested_trigger = band
         elif watch_text:
             suggested_trigger = watch_text
         else:
             suggested_trigger = "无"
 
         tip = watchlist_action_label(action)
-        if action == "BUY" and trigger_low is not None:
-            tip = f"买入/回补 参考价 {trigger_low}-{trigger_high}"
-        elif action == "SELL" and trigger_low is not None:
-            tip = f"卖出/做空 参考价 {trigger_low}-{trigger_high}"
+        if action == "BUY" and band:
+            tip = f"买入/回补 参考价 {band}"
+        elif action == "SELL" and band:
+            tip = f"卖出/做空 参考价 {band}"
         elif action == "HOLD" and watch_text:
             tip = f"观望；{watch_text}"
 
@@ -168,6 +174,7 @@ def serialize_trade_plan_for_decision(stock: dict[str, Any]) -> dict[str, Any]:
         "pct_of_holding": plan.get("pct_of_holding", 0.0),
         "trigger_price_low": plan.get("trigger_price_low"),
         "trigger_price_high": plan.get("trigger_price_high"),
+        "preferred_trigger_price": plan.get("preferred_trigger_price"),
         "watch_triggers": plan.get("watch_triggers") or [],
     }
 

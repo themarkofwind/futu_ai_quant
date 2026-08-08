@@ -10,6 +10,14 @@ from futu_ai_quant.market.fees import (
 from futu_ai_quant.market.lot import calc_full_lot_trade_qty, resolve_lot_size_detail
 from futu_ai_quant.utils.numbers import safe_float
 
+# 持仓波段：相对宽的 ATR 区间（兼容原逻辑）
+_HOLDING_NEAR_ATR = 0.5
+_HOLDING_FAR_ATR = 1.5
+# 自选观察：以锚点为中心的窄带（半宽上限）
+_WATCHLIST_HALF_ATR = 0.25
+_WATCHLIST_HALF_MAX_PCT = 0.006  # 现价的 0.6%
+_WATCHLIST_ANCHOR_ATR = 0.5
+
 
 def _sell_swing_band(
     market_price: float,
@@ -17,8 +25,8 @@ def _sell_swing_band(
 ) -> tuple[float, float]:
     if atr_market is not None:
         return (
-            round(market_price + 0.5 * atr_market, 3),
-            round(market_price + 1.5 * atr_market, 3),
+            round(market_price + _HOLDING_NEAR_ATR * atr_market, 3),
+            round(market_price + _HOLDING_FAR_ATR * atr_market, 3),
         )
     return round(market_price * 1.01, 3), round(market_price * 1.04, 3)
 
@@ -29,10 +37,60 @@ def _buy_swing_band(
 ) -> tuple[float, float]:
     if atr_market is not None:
         return (
-            round(market_price - 1.5 * atr_market, 3),
-            round(market_price - 0.5 * atr_market, 3),
+            round(market_price - _HOLDING_FAR_ATR * atr_market, 3),
+            round(market_price - _HOLDING_NEAR_ATR * atr_market, 3),
         )
     return round(market_price * 0.96, 3), round(market_price * 0.99, 3)
+
+
+def _band_half_width(market_price: float, atr_market: float | None) -> float:
+    atr_half = (
+        _WATCHLIST_HALF_ATR * atr_market if atr_market is not None and atr_market > 0 else None
+    )
+    pct_half = market_price * _WATCHLIST_HALF_MAX_PCT
+    if atr_half is None:
+        return round(pct_half, 4)
+    return round(min(atr_half, pct_half), 4)
+
+
+def _centered_band(center: float, half: float) -> tuple[float, float]:
+    return round(center - half, 3), round(center + half, 3)
+
+
+def _watchlist_buy_band(
+    market_price: float,
+    atr_market: float | None,
+    *,
+    boll_lower: float | None = None,
+) -> tuple[float, float, float]:
+    """返回 (low, high, preferred)。优先锚布林下轨。"""
+    if boll_lower is not None and boll_lower < market_price:
+        center = boll_lower
+    elif atr_market is not None:
+        center = market_price - _WATCHLIST_ANCHOR_ATR * atr_market
+    else:
+        center = market_price * 0.98
+    half = _band_half_width(market_price, atr_market)
+    low, high = _centered_band(center, half)
+    return low, high, round(center, 3)
+
+
+def _watchlist_sell_band(
+    market_price: float,
+    atr_market: float | None,
+    *,
+    boll_upper: float | None = None,
+) -> tuple[float, float, float]:
+    """返回 (low, high, preferred)。优先锚布林上轨。"""
+    if boll_upper is not None and boll_upper > market_price:
+        center = boll_upper
+    elif atr_market is not None:
+        center = market_price + _WATCHLIST_ANCHOR_ATR * atr_market
+    else:
+        center = market_price * 1.02
+    half = _band_half_width(market_price, atr_market)
+    low, high = _centered_band(center, half)
+    return low, high, round(center, 3)
 
 
 def attach_watch_triggers(
@@ -41,20 +99,27 @@ def attach_watch_triggers(
     *,
     market_price: float,
     atr_market: float | None,
+    boll_lower: float | None = None,
+    boll_upper: float | None = None,
 ) -> None:
     """HOLD/WAIT 时给出条件观望参考价（不生成实际挂单数量）。"""
     tier = str(swing_strategy.get("loss_tier") or "moderate_loss")
     watches: list[dict[str, Any]] = []
 
     if tier == "watchlist":
-        buy_low, buy_high = _buy_swing_band(market_price, atr_market)
-        sell_low, sell_high = _sell_swing_band(market_price, atr_market)
+        buy_low, buy_high, buy_pref = _watchlist_buy_band(
+            market_price, atr_market, boll_lower=boll_lower
+        )
+        sell_low, sell_high, sell_pref = _watchlist_sell_band(
+            market_price, atr_market, boll_upper=boll_upper
+        )
         watches.append(
             {
                 "side": "buy",
                 "price_low": buy_low,
                 "price_high": buy_high,
-                "note": "回调至此区间可考虑买入/回补",
+                "preferred_price": buy_pref,
+                "note": "回调至附近可考虑买入/回补",
             }
         )
         watches.append(
@@ -62,7 +127,8 @@ def attach_watch_triggers(
                 "side": "sell",
                 "price_low": sell_low,
                 "price_high": sell_high,
-                "note": "反弹至此区间可考虑卖出/做空",
+                "preferred_price": sell_pref,
+                "note": "反弹至附近可考虑卖出/做空",
             }
         )
         plan["watch_triggers"] = watches
@@ -92,6 +158,14 @@ def attach_watch_triggers(
     plan["watch_triggers"] = watches
 
 
+def format_price_band(low: Any, high: Any, preferred: Any = None) -> str:
+    if preferred is not None and low is not None and high is not None:
+        return f"{preferred}（{low}-{high}）"
+    if low is not None and high is not None:
+        return f"{low}-{high}"
+    return ""
+
+
 def format_watch_triggers(plan: dict[str, Any]) -> str:
     parts: list[str] = []
     for item in plan.get("watch_triggers") or []:
@@ -109,7 +183,8 @@ def format_watch_triggers(plan: dict[str, Any]) -> str:
         else:
             label = "参考"
         note = str(item.get("note") or "").strip()
-        chunk = f"{label} {low}-{high}"
+        band = format_price_band(low, high, item.get("preferred_price"))
+        chunk = f"{label} {band}"
         if note:
             chunk = f"{chunk}（{note}）"
         parts.append(chunk)
@@ -213,53 +288,62 @@ def build_stock_trade_plan(
     if atr_market is not None:
         plan["atr_used"] = atr_market
 
-    if market_price is not None:
-        if signal == "SELL_SWING":
-            low, high = _sell_swing_band(market_price, atr_market)
-            plan["trigger_price_low"] = low
-            plan["trigger_price_high"] = high
-        elif signal == "BUY_SWING":
-            low, high = _buy_swing_band(market_price, atr_market)
-            plan["trigger_price_low"] = low
-            plan["trigger_price_high"] = high
-
+    boll_lower = safe_float(daily.get("boll_lower"))
+    boll_upper = safe_float(daily.get("boll_upper"))
     is_watchlist = str(stock.get("position_type") or "") == "WATCHLIST" or (
         str(swing_strategy.get("loss_tier") or "") == "watchlist"
     )
 
+    if market_price is not None:
+        if signal == "SELL_SWING":
+            if is_watchlist:
+                low, high, pref = _watchlist_sell_band(
+                    market_price, atr_market, boll_upper=boll_upper
+                )
+                plan["preferred_trigger_price"] = pref
+            else:
+                low, high = _sell_swing_band(market_price, atr_market)
+            plan["trigger_price_low"] = low
+            plan["trigger_price_high"] = high
+        elif signal == "BUY_SWING":
+            if is_watchlist:
+                low, high, pref = _watchlist_buy_band(
+                    market_price, atr_market, boll_lower=boll_lower
+                )
+                plan["preferred_trigger_price"] = pref
+            else:
+                low, high = _buy_swing_band(market_price, atr_market)
+            plan["trigger_price_low"] = low
+            plan["trigger_price_high"] = high
+
     if is_watchlist and market_price is not None:
         # 自选：不按持仓数量下单，只给方向 + 股价区间
+        watch_kwargs = {
+            "market_price": market_price,
+            "atr_market": atr_market,
+            "boll_lower": boll_lower,
+            "boll_upper": boll_upper,
+        }
         if signal == "SELL_SWING":
             plan["direction"] = "sell"
-            plan["trade_note"] = (
-                f"技术面提示卖出/做空，参考区间 "
-                f"{plan.get('trigger_price_low')}-{plan.get('trigger_price_high')}"
+            band = format_price_band(
+                plan.get("trigger_price_low"),
+                plan.get("trigger_price_high"),
+                plan.get("preferred_trigger_price"),
             )
-            attach_watch_triggers(
-                plan,
-                swing_strategy,
-                market_price=market_price,
-                atr_market=atr_market,
-            )
+            plan["trade_note"] = f"技术面提示卖出/做空，参考区间 {band}"
+            attach_watch_triggers(plan, swing_strategy, **watch_kwargs)
         elif signal == "BUY_SWING":
             plan["direction"] = "buy"
-            plan["trade_note"] = (
-                f"技术面提示买入/回补，参考区间 "
-                f"{plan.get('trigger_price_low')}-{plan.get('trigger_price_high')}"
+            band = format_price_band(
+                plan.get("trigger_price_low"),
+                plan.get("trigger_price_high"),
+                plan.get("preferred_trigger_price"),
             )
-            attach_watch_triggers(
-                plan,
-                swing_strategy,
-                market_price=market_price,
-                atr_market=atr_market,
-            )
+            plan["trade_note"] = f"技术面提示买入/回补，参考区间 {band}"
+            attach_watch_triggers(plan, swing_strategy, **watch_kwargs)
         elif signal in ("HOLD", "WAIT"):
-            attach_watch_triggers(
-                plan,
-                swing_strategy,
-                market_price=market_price,
-                atr_market=atr_market,
-            )
+            attach_watch_triggers(plan, swing_strategy, **watch_kwargs)
             plan["trade_note"] = "暂无明确方向，附买入/卖出参考价"
         apply_data_quality_to_trade_plan(plan, stock)
         return plan

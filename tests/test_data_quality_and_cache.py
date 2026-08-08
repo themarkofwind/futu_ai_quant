@@ -11,7 +11,7 @@ from futu import KLType, RET_OK
 from futu_ai_quant.analysis.data_quality import attach_data_quality
 from futu_ai_quant.indicators import kline_cache
 from futu_ai_quant.market.lot import resolve_lot_size_detail
-from futu_ai_quant.planning.stock import build_stock_trade_plan
+from futu_ai_quant.planning.stock import build_stock_trade_plan, format_watch_triggers
 
 
 def test_resolve_lot_size_detail_confirmed_from_snapshot() -> None:
@@ -115,6 +115,81 @@ def test_hold_watch_triggers_profitable_sell_only() -> None:
     )
     assert len(plan["watch_triggers"]) == 1
     assert plan["watch_triggers"][0]["side"] == "sell"
+
+
+def test_watchlist_bands_are_tighter_than_holding_bands() -> None:
+    stock = {
+        "code": "HK.01347",
+        "qty": 0,
+        "can_sell_qty": 0,
+        "lot_size": 100,
+        "lot_confirmed": True,
+        "position_type": "WATCHLIST",
+        "daily": {
+            "atr": 10.0,
+            "technical_close": 128.0,
+            "boll_lower": 120.0,
+            "boll_upper": 136.0,
+            "swing_signal": "HOLD",
+        },
+        "weekly": {"swing_signal": "HOLD"},
+        "swing_strategy": {"max_swing_position_pct": 0, "loss_tier": "watchlist"},
+        "combined_swing_signal": {"effective_signal": "HOLD"},
+        "pnl": {"market_price": 128.0},
+        "data_quality": {"status": "ok", "issues": []},
+    }
+    plan = build_stock_trade_plan(
+        stock,
+        stock["swing_strategy"],
+        stock["combined_swing_signal"],
+        {"lot_size": 100},
+        stock["pnl"],
+    )
+    buy = next(w for w in plan["watch_triggers"] if w["side"] == "buy")
+    sell = next(w for w in plan["watch_triggers"] if w["side"] == "sell")
+    assert buy["preferred_price"] == 120.0
+    assert sell["preferred_price"] == 136.0
+    assert buy["price_high"] - buy["price_low"] < 2.0
+    assert sell["price_high"] - sell["price_low"] < 2.0
+    assert buy["price_high"] - buy["price_low"] < 10.0 * 0.3
+
+    text = format_watch_triggers(plan)
+    assert "买入参考" in text and "卖出参考" in text
+    assert "120" in text
+
+
+def test_watchlist_sell_trigger_uses_narrow_band() -> None:
+    stock = {
+        "code": "HK.01347",
+        "qty": 0,
+        "can_sell_qty": 0,
+        "lot_size": 100,
+        "lot_confirmed": True,
+        "position_type": "WATCHLIST",
+        "daily": {
+            "atr": 4.0,
+            "technical_close": 140.0,
+            "boll_upper": 145.0,
+            "boll_lower": 130.0,
+            "swing_signal": "SELL_SWING",
+        },
+        "weekly": {"swing_signal": "HOLD"},
+        "swing_strategy": {"loss_tier": "watchlist"},
+        "combined_swing_signal": {"effective_signal": "SELL_SWING"},
+        "pnl": {"market_price": 140.0},
+        "data_quality": {"status": "ok", "issues": []},
+    }
+    plan = build_stock_trade_plan(
+        stock,
+        stock["swing_strategy"],
+        stock["combined_swing_signal"],
+        {"lot_size": 100},
+        stock["pnl"],
+    )
+    assert plan["direction"] == "sell"
+    assert plan["preferred_trigger_price"] == 145.0
+    assert plan["trigger_price_high"] - plan["trigger_price_low"] < 2.0
+    assert "145" in (plan.get("trade_note") or "")
 
 
 def test_round_kline_cache_dedupes_without_disk_cache(

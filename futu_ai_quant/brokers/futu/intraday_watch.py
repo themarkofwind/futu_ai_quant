@@ -29,6 +29,7 @@ from futu_ai_quant.notify.bark import (
 from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.strategy.intraday_t import (
     IntradayTContext,
+    IntradayTState,
     SignalEvent,
     SignalKind,
     build_status_message,
@@ -143,8 +144,15 @@ class IntradayTWatch:
                 sym.ctx.lot_size = lot
             spread = self._target_by_code.get(sym.code)
             if spread is not None and spread != sym.ctx.target_spread:
-                notes.append(f"{sym.code} spread {sym.ctx.target_spread}→{spread}")
-                sym.ctx.target_spread = spread
+                if sym.ctx.state != IntradayTState.AT_BASE:
+                    notes.append(
+                        f"{sym.code} spread 持仓中保持 {sym.ctx.target_spread}"
+                        f"（忽略热加载 {spread}）"
+                    )
+                else:
+                    notes.append(f"{sym.code} spread {sym.ctx.target_spread}→{spread}")
+                    sym.ctx.configured_spread = spread
+                    sym.ctx.target_spread = spread
 
         if codes is not None:
             desired = list(dict.fromkeys(codes))

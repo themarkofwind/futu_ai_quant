@@ -37,6 +37,7 @@ from futu_ai_quant.notify.bark import (
 from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.strategy.intraday_t import (
     IntradayTContext,
+    IntradayTState,
     SignalEvent,
     SignalKind,
     build_status_message,
@@ -155,8 +156,14 @@ class IntradayTMonitor:
             notes.append(f"lot_size {self.ctx.lot_size}→{lot_size}")
             self.ctx.lot_size = lot_size
         if target_spread is not None and target_spread != self.ctx.target_spread:
-            notes.append(f"target_spread {self.ctx.target_spread}→{target_spread}")
-            self.ctx.target_spread = target_spread
+            if self.ctx.state != IntradayTState.AT_BASE:
+                notes.append(
+                    f"target_spread 持仓中保持 {self.ctx.target_spread}（忽略热加载 {target_spread}）"
+                )
+            else:
+                notes.append(f"target_spread {self.ctx.target_spread}→{target_spread}")
+                self.ctx.configured_spread = target_spread
+                self.ctx.target_spread = target_spread
         if not self._freeze_status_interval:
             value = (
                 its.INTRADAY_T_STATUS_INTERVAL_SEC
