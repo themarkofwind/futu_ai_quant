@@ -345,6 +345,8 @@ class IntradayTMonitor:
             current_price=self._current_price,
             vwap=self._vwap,
             indicators=self._locked_indicators,
+            now=datetime.now(),
+            code=self.code,
         )
 
     def _emit_events(self, events: list[SignalEvent]) -> None:

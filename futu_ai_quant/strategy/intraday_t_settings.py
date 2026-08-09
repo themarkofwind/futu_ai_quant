@@ -62,6 +62,13 @@ INTRADAY_T_STATUS_INTERVAL_SEC: int = 30
 INTRADAY_T_EVAL_TICK_SEC: float = 2.0
 INTRADAY_T_VOLUME_SURGE_RATIO: float = 2.5
 INTRADAY_T_CONSECUTIVE_ABOVE_BAND: int = 3
+# 风控 / 过滤（0=关闭对应项）
+INTRADAY_T_STOP_LOSS_MULT: float = 1.5  # 浮亏 ≥ 倍数×目标价差则止损
+INTRADAY_T_SKIP_OPEN_MIN: float = 15.0  # 每小节开盘后 N 分钟内禁止新开仓
+INTRADAY_T_SKIP_CLOSE_MIN: float = 20.0  # 距收盘 ≤N 分钟：禁开仓 + 持仓强平
+INTRADAY_T_ENTRY_CONFIRM: bool = True  # 开仓需锁定 K 收盘也在轨外（防盘中刺破）
+# 分标的覆盖 JSON，例：{"HK.01347":{"rsi_sell":78,"rsi_buy":32}}
+INTRADAY_T_CODE_PARAMS: str = ""
 
 
 _SETTING_SPECS: tuple[tuple[str, str, Any, Any], ...] = (
@@ -91,6 +98,11 @@ _SETTING_SPECS: tuple[tuple[str, str, Any, Any], ...] = (
     ("INTRADAY_T_EVAL_TICK_SEC", "INTRADAY_T_EVAL_TICK_SEC", "float", 2.0),
     ("INTRADAY_T_VOLUME_SURGE_RATIO", "INTRADAY_T_VOLUME_SURGE_RATIO", "float", 2.5),
     ("INTRADAY_T_CONSECUTIVE_ABOVE_BAND", "INTRADAY_T_CONSECUTIVE_ABOVE_BAND", "int", 3),
+    ("INTRADAY_T_STOP_LOSS_MULT", "INTRADAY_T_STOP_LOSS_MULT", "float", 1.5),
+    ("INTRADAY_T_SKIP_OPEN_MIN", "INTRADAY_T_SKIP_OPEN_MIN", "float", 15.0),
+    ("INTRADAY_T_SKIP_CLOSE_MIN", "INTRADAY_T_SKIP_CLOSE_MIN", "float", 20.0),
+    ("INTRADAY_T_ENTRY_CONFIRM", "INTRADAY_T_ENTRY_CONFIRM", "bool", True),
+    ("INTRADAY_T_CODE_PARAMS", "INTRADAY_T_CODE_PARAMS", "str", ""),
 )
 
 

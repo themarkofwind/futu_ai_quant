@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -15,6 +17,7 @@ from futu_ai_quant.indicators.intraday import (
     compute_vwap,
     normalize_kline_frame,
 )
+from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.strategy.intraday_t import (
     IntradayTContext,
     SignalEvent,
@@ -22,7 +25,7 @@ from futu_ai_quant.strategy.intraday_t import (
     build_status_message,
     evaluate_intraday_t,
 )
-from futu_ai_quant.strategy import intraday_t_settings as its
+from futu_ai_quant.strategy.intraday_t_params import IntradayTRuleParams, resolve_rule_params
 from futu_ai_quant.utils.numbers import safe_float
 
 
@@ -34,6 +37,7 @@ class ReplayResult:
     bars_replayed: int
     ticks_processed: int
     events: list[SignalEvent] = field(default_factory=list)
+    approx_pnl: float = 0.0
 
     @property
     def sell_count(self) -> int:
@@ -55,6 +59,12 @@ class ReplayResult:
     def warning_count(self) -> int:
         return sum(1 for e in self.events if e.kind == SignalKind.WARNING)
 
+    @property
+    def round_trips(self) -> int:
+        return min(self.sell_count, self.buy_back_count) + min(
+            self.buy_t_count, self.sell_off_count
+        )
+
 
 def filter_kline_by_day(frame: pd.DataFrame, day: str) -> pd.DataFrame:
     """保留 ``YYYY-MM-DD`` 当天的 5 分钟 K 线。"""
@@ -71,6 +81,39 @@ def latest_trading_day(frame: pd.DataFrame) -> str | None:
     if work.empty:
         return None
     return str(work.iloc[-1]["time_key"])[:10]
+
+
+def parse_replay_clock(label: str) -> datetime | None:
+    """从 ``YYYY-MM-DD HH:MM:SS`` 或带 ``@open`` 后缀的标签解析时钟。"""
+    raw = str(label).split("@", 1)[0].strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def approx_pnl_from_events(events: list[SignalEvent]) -> float:
+    """用开平仓价差粗算每股 PnL（未扣费）。"""
+    pnl = 0.0
+    short_entry: float | None = None
+    long_entry: float | None = None
+    for event in events:
+        px = event.price
+        if px is None:
+            continue
+        if event.kind == SignalKind.SELL:
+            short_entry = px
+        elif event.kind == SignalKind.BUY_BACK and short_entry is not None:
+            pnl += short_entry - px
+            short_entry = None
+        elif event.kind == SignalKind.BUY_T:
+            long_entry = px
+        elif event.kind == SignalKind.SELL_OFF and long_entry is not None:
+            pnl += px - long_entry
+            long_entry = None
+    return round(pnl, 4)
 
 
 def _bar_ticks(row: pd.Series) -> list[tuple[str, float, float, float]]:
@@ -112,6 +155,7 @@ def replay_intraday_t(
     ctx: IntradayTContext | None = None,
     day: str | None = None,
     speed_sec: float = 0.0,
+    params: IntradayTRuleParams | None = None,
     on_event: Callable[[SignalEvent, str], None] | None = None,
     on_tick: Callable[[str, float, float | None, dict[str, Any]], None] | None = None,
 ) -> ReplayResult:
@@ -135,6 +179,7 @@ def replay_intraday_t(
         raise ValueError(f"回放日 {replay_day} 无 K 线数据")
 
     ctx = ctx or IntradayTContext()
+    rule = params or resolve_rule_params(code)
     window = pd.DataFrame()
     forming_time_key: str | None = None
     locked_indicators: dict[str, Any] = {"ready": False, "locked": False}
@@ -172,6 +217,9 @@ def replay_intraday_t(
             current_price=price,
             vwap=vwap,
             indicators=locked_indicators,
+            now=parse_replay_clock(label),
+            code=code,
+            params=rule,
         )
         _emit(tick_events, price, vwap)
         if speed_sec > 0:
@@ -203,7 +251,7 @@ def replay_intraday_t(
                 vwap = compute_vwap(cum_turnover, cum_volume)
                 _evaluate_at(price, vwap, tick_label)
 
-    return ReplayResult(
+    result = ReplayResult(
         code=code,
         day=replay_day,
         bars_total=len(day_bars),
@@ -211,3 +259,69 @@ def replay_intraday_t(
         ticks_processed=ticks_processed,
         events=events,
     )
+    result.approx_pnl = approx_pnl_from_events(events)
+    return result
+
+
+def _parse_float_list(raw: str) -> list[float]:
+    parts = [p.strip() for p in str(raw).split(",") if p.strip()]
+    if not parts:
+        raise ValueError("调参列表为空")
+    return [float(p) for p in parts]
+
+
+@dataclass
+class TuneRow:
+    rsi_sell: float
+    rsi_buy: float
+    sell: int
+    buy_back: int
+    buy_t: int
+    sell_off: int
+    round_trips: int
+    approx_pnl: float
+
+
+def tune_intraday_t_replay(
+    kline_df: pd.DataFrame,
+    *,
+    code: str,
+    day: str | None = None,
+    rsi_sells: list[float] | None = None,
+    rsi_buys: list[float] | None = None,
+    base_ctx: IntradayTContext | None = None,
+) -> list[TuneRow]:
+    """对 RSI 买卖阈值做网格回放，按近似每股盈亏排序。"""
+    sells = rsi_sells or [70.0, 75.0, 80.0]
+    buys = rsi_buys or [30.0, 35.0, 40.0]
+    rows: list[TuneRow] = []
+    for rsi_sell in sells:
+        for rsi_buy in buys:
+            if rsi_buy >= rsi_sell:
+                continue
+            ctx = deepcopy(base_ctx) if base_ctx is not None else IntradayTContext()
+            params = resolve_rule_params(
+                code,
+                overrides={"rsi_sell": rsi_sell, "rsi_buy": rsi_buy},
+            )
+            result = replay_intraday_t(
+                kline_df,
+                code=code,
+                ctx=ctx,
+                day=day,
+                params=params,
+            )
+            rows.append(
+                TuneRow(
+                    rsi_sell=rsi_sell,
+                    rsi_buy=rsi_buy,
+                    sell=result.sell_count,
+                    buy_back=result.buy_back_count,
+                    buy_t=result.buy_t_count,
+                    sell_off=result.sell_off_count,
+                    round_trips=result.round_trips,
+                    approx_pnl=result.approx_pnl,
+                )
+            )
+    rows.sort(key=lambda r: (r.approx_pnl, r.round_trips), reverse=True)
+    return rows

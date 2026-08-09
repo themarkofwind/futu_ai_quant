@@ -273,6 +273,84 @@ class TestIntradayTStateMachine:
         assert not any(e.kind == SignalKind.WARNING for e in events)
         assert ctx.state == IntradayTState.SHORT_T
 
+    def test_stop_loss_closes_short(self) -> None:
+        from futu_ai_quant.strategy.intraday_t_params import IntradayTRuleParams
+
+        ctx = IntradayTContext(target_spread=1.0)
+        ctx.state = IntradayTState.SHORT_T
+        ctx.entry_price = 100.0
+        indicators = self._rich_indicators(close=102.0, rsi=50.0, upper=110.0, lower=90.0)
+        events = evaluate_intraday_t(
+            ctx,
+            current_price=101.6,
+            vwap=100.0,
+            indicators=indicators,
+            params=IntradayTRuleParams(stop_loss_mult=1.5, skip_close_min=0),
+        )
+        assert any(e.kind == SignalKind.BUY_BACK and "[STOP]" in e.message for e in events)
+        assert ctx.state == IntradayTState.AT_BASE
+
+    def test_eod_flattens_long(self) -> None:
+        from datetime import datetime
+
+        from futu_ai_quant.strategy.intraday_t_params import IntradayTRuleParams
+
+        ctx = IntradayTContext(target_spread=1.0)
+        ctx.state = IntradayTState.LONG_T
+        ctx.entry_price = 100.0
+        indicators = self._rich_indicators(close=100.5, rsi=50.0, upper=110.0, lower=90.0)
+        events = evaluate_intraday_t(
+            ctx,
+            current_price=100.5,
+            vwap=100.0,
+            indicators=indicators,
+            now=datetime(2026, 6, 16, 15, 50, 0),
+            code="HK.01347",
+            params=IntradayTRuleParams(stop_loss_mult=0, skip_close_min=20),
+        )
+        assert any(e.kind == SignalKind.SELL_OFF and "[EOD]" in e.message for e in events)
+        assert ctx.state == IntradayTState.AT_BASE
+
+    def test_skip_open_blocks_entry(self) -> None:
+        from datetime import datetime
+
+        from futu_ai_quant.strategy.intraday_t_params import IntradayTRuleParams
+
+        ctx = IntradayTContext()
+        indicators = self._rich_indicators(close=110.0, rsi=80.0, upper=105.0, lower=95.0)
+        events = evaluate_intraday_t(
+            ctx,
+            current_price=110.0,
+            vwap=100.0,
+            indicators=indicators,
+            now=datetime(2026, 6, 16, 9, 35, 0),
+            code="HK.01347",
+            params=IntradayTRuleParams(skip_open_min=15, skip_close_min=0, entry_confirm=True),
+        )
+        assert not any(e.kind == SignalKind.SELL for e in events)
+        assert ctx.state == IntradayTState.AT_BASE
+
+    def test_entry_confirm_blocks_tick_pierce(self) -> None:
+        from futu_ai_quant.strategy.intraday_t_params import IntradayTRuleParams
+
+        ctx = IntradayTContext()
+        # 现价刺破上轨，但锁定收盘仍在轨内
+        indicators = self._rich_indicators(close=104.0, rsi=80.0, upper=105.0, lower=95.0)
+        events = evaluate_intraday_t(
+            ctx,
+            current_price=110.0,
+            vwap=100.0,
+            indicators=indicators,
+            params=IntradayTRuleParams(
+                entry_confirm=True,
+                skip_open_min=0,
+                skip_close_min=0,
+                stop_loss_mult=0,
+            ),
+        )
+        assert not any(e.kind == SignalKind.SELL for e in events)
+        assert ctx.state == IntradayTState.AT_BASE
+
 
 class TestRtDataFreshness:
     def test_accepts_same_session(self) -> None:

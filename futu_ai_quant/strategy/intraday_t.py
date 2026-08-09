@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
@@ -14,8 +15,14 @@ from futu_ai_quant.indicators.intraday import (
     count_consecutive_closes_below_lower,
     normalize_kline_frame,
 )
+from futu_ai_quant.market.session import (
+    market_of_code,
+    minutes_since_continuous_open,
+    minutes_until_day_close,
+)
 from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.strategy.intraday_t_cost import resolve_entry_target_spread
+from futu_ai_quant.strategy.intraday_t_params import IntradayTRuleParams, resolve_rule_params
 from futu_ai_quant.utils.numbers import safe_float
 
 
@@ -173,12 +180,60 @@ def _resolve_price(current_price: float | None, indicators: dict[str, Any]) -> f
     return safe_float(indicators.get("close"))
 
 
+def entry_window_allows_open(
+    *,
+    market: str,
+    now: datetime | None,
+    params: IntradayTRuleParams,
+) -> tuple[bool, str | None]:
+    """
+    开仓时段过滤。
+
+    ``now is None`` 时跳过时段限制（便于单测 / 无时钟上下文）。
+    """
+    if now is None:
+        return True, None
+
+    since_open = minutes_since_continuous_open(market, now)
+    until_close = minutes_until_day_close(market, now)
+    if since_open is None or until_close is None:
+        return False, "非连续交易时段"
+
+    if params.skip_open_min > 0 and since_open < params.skip_open_min:
+        return False, f"开盘后 {params.skip_open_min:g} 分钟内禁开仓（已过 {since_open:.1f} 分）"
+    if params.skip_close_min > 0 and until_close <= params.skip_close_min:
+        return False, f"距收盘 ≤{params.skip_close_min:g} 分钟禁开仓（剩余 {until_close:.1f} 分）"
+    return True, None
+
+
+def _should_eod_flatten(
+    *,
+    market: str,
+    now: datetime | None,
+    params: IntradayTRuleParams,
+) -> bool:
+    if now is None or params.skip_close_min <= 0:
+        return False
+    until_close = minutes_until_day_close(market, now)
+    return until_close is not None and until_close <= params.skip_close_min
+
+
+def _reset_to_base(ctx: IntradayTContext) -> None:
+    ctx.state = IntradayTState.AT_BASE
+    ctx.entry_price = None
+    if ctx.configured_spread is not None:
+        ctx.target_spread = ctx.configured_spread
+
+
 def evaluate_intraday_t(
     ctx: IntradayTContext,
     *,
     current_price: float | None,
     vwap: float | None,
     indicators: dict[str, Any],
+    now: datetime | None = None,
+    code: str | None = None,
+    params: IntradayTRuleParams | None = None,
 ) -> list[SignalEvent]:
     """根据秒级现价与已锁定指标评估双向做 T 信号，并原地更新状态机。"""
     events: list[SignalEvent] = []
@@ -186,7 +241,10 @@ def evaluate_intraday_t(
     rsi = safe_float(indicators.get("rsi"))
     boll_upper = safe_float(indicators.get("boll_upper"))
     boll_lower = safe_float(indicators.get("boll_lower"))
+    locked_close = safe_float(indicators.get("close"))
     indicators_ready = indicators.get("locked") or indicators.get("ready")
+    rule = params or resolve_rule_params(code)
+    market = market_of_code(code) if code else "HK"
 
     if ctx.state == IntradayTState.AT_BASE:
         up_warn, up_msg = detect_strong_uptrend_warning(indicators)
@@ -224,79 +282,59 @@ def evaluate_intraday_t(
     if not indicators_ready or price is None:
         return events
 
-    sell_open_ready = (
-        boll_upper is not None
-        and rsi is not None
-        and vwap is not None
-        and price >= boll_upper
-        and rsi >= its.INTRADAY_T_RSI_SELL
-        and price > vwap * its.INTRADAY_T_VWAP_PREMIUM
-    )
-
-    buy_open_ready = (
-        boll_lower is not None
-        and rsi is not None
-        and vwap is not None
-        and price <= boll_lower
-        and rsi <= its.INTRADAY_T_RSI_BUY
-        and price < vwap * its.INTRADAY_T_VWAP_DISCOUNT
-    )
-
-    if ctx.state == IntradayTState.AT_BASE and sell_open_ready and not ctx.warning_uptrend:
-        ctx.state = IntradayTState.SHORT_T
-        ctx.entry_price = price
-        ctx.target_spread = resolve_entry_target_spread(
-            ctx.configured_spread if ctx.configured_spread is not None else ctx.target_spread,
-            boll_upper=boll_upper,
-            boll_lower=boll_lower,
-        )
-        events.append(
-            SignalEvent(
-                kind=SignalKind.SELL,
-                message=(
-                    f"🚨 [SELL T] 建议卖出 {ctx.lot_size} 股 @ {price:.3f} {ctx.currency} | "
-                    f"锚定价={price:.3f} | 目标买回 <= {price - ctx.target_spread:.3f} {ctx.currency}"
-                ),
-                price=price,
-                vwap=vwap,
-                rsi=rsi,
-                boll_upper=boll_upper,
-                state=ctx.state,
-            )
-        )
-        return events
-
-    if ctx.state == IntradayTState.AT_BASE and buy_open_ready and not ctx.warning_downtrend:
-        ctx.state = IntradayTState.LONG_T
-        ctx.entry_price = price
-        ctx.target_spread = resolve_entry_target_spread(
-            ctx.configured_spread if ctx.configured_spread is not None else ctx.target_spread,
-            boll_upper=boll_upper,
-            boll_lower=boll_lower,
-        )
-        events.append(
-            SignalEvent(
-                kind=SignalKind.BUY_T,
-                message=(
-                    f"🚨 [BUY T] 建议买入 {ctx.lot_size} 股 @ {price:.3f} {ctx.currency} | "
-                    f"锚定价={price:.3f} | 目标卖出 >= {price + ctx.target_spread:.3f} {ctx.currency}"
-                ),
-                price=price,
-                vwap=vwap,
-                rsi=rsi,
-                boll_upper=boll_upper,
-                state=ctx.state,
-            )
-        )
-        return events
-
+    # ----- 持仓：止损 / 尾盘强平 / 止盈 -----
     if ctx.state == IntradayTState.SHORT_T and ctx.entry_price is not None:
+        stop_px = (
+            ctx.entry_price + rule.stop_loss_mult * ctx.target_spread
+            if rule.stop_loss_mult > 0
+            else None
+        )
+        if stop_px is not None and price >= stop_px:
+            loss = price - ctx.entry_price
+            events.append(
+                SignalEvent(
+                    kind=SignalKind.BUY_BACK,
+                    message=(
+                        f"🛑 [STOP] 高抛止损买回 {ctx.lot_size} 股 @ {price:.3f} {ctx.currency} | "
+                        f"触发：浮亏止损（>={stop_px:.3f}，{rule.stop_loss_mult:g}×价差）| "
+                        f"预估净价差 {-loss:.3f} {ctx.currency}"
+                    ),
+                    price=price,
+                    vwap=vwap,
+                    rsi=rsi,
+                    boll_upper=boll_upper,
+                    state=IntradayTState.AT_BASE,
+                )
+            )
+            _reset_to_base(ctx)
+            return events
+
+        if _should_eod_flatten(market=market, now=now, params=rule):
+            pnl = ctx.entry_price - price
+            events.append(
+                SignalEvent(
+                    kind=SignalKind.BUY_BACK,
+                    message=(
+                        f"⏰ [EOD] 尾盘强平买回 {ctx.lot_size} 股 @ {price:.3f} {ctx.currency} | "
+                        f"触发：距收盘 ≤{rule.skip_close_min:g} 分钟 | "
+                        f"预估净价差 {pnl:.3f} {ctx.currency}"
+                    ),
+                    price=price,
+                    vwap=vwap,
+                    rsi=rsi,
+                    boll_upper=boll_upper,
+                    state=IntradayTState.AT_BASE,
+                )
+            )
+            _reset_to_base(ctx)
+            return events
+
         take_profit = price <= (ctx.entry_price - ctx.target_spread)
         technical_buy = (
             boll_lower is not None
             and rsi is not None
             and price <= boll_lower
-            and rsi <= its.INTRADAY_T_RSI_BUY
+            and rsi <= rule.rsi_buy
         )
         if take_profit or technical_buy:
             reason = (
@@ -319,20 +357,63 @@ def evaluate_intraday_t(
                     state=IntradayTState.AT_BASE,
                 )
             )
-            ctx.state = IntradayTState.AT_BASE
-            ctx.entry_price = None
-            if ctx.configured_spread is not None:
-                ctx.target_spread = ctx.configured_spread
+            _reset_to_base(ctx)
+        return events
 
-    elif ctx.state == IntradayTState.LONG_T and ctx.entry_price is not None:
+    if ctx.state == IntradayTState.LONG_T and ctx.entry_price is not None:
+        stop_px = (
+            ctx.entry_price - rule.stop_loss_mult * ctx.target_spread
+            if rule.stop_loss_mult > 0
+            else None
+        )
+        if stop_px is not None and price <= stop_px:
+            loss = ctx.entry_price - price
+            events.append(
+                SignalEvent(
+                    kind=SignalKind.SELL_OFF,
+                    message=(
+                        f"🛑 [STOP] 低吸止损卖出 {ctx.lot_size} 股 @ {price:.3f} {ctx.currency} | "
+                        f"触发：浮亏止损（<={stop_px:.3f}，{rule.stop_loss_mult:g}×价差）| "
+                        f"预估净价差 {-loss:.3f} {ctx.currency}"
+                    ),
+                    price=price,
+                    vwap=vwap,
+                    rsi=rsi,
+                    boll_upper=boll_upper,
+                    state=IntradayTState.AT_BASE,
+                )
+            )
+            _reset_to_base(ctx)
+            return events
+
+        if _should_eod_flatten(market=market, now=now, params=rule):
+            pnl = price - ctx.entry_price
+            events.append(
+                SignalEvent(
+                    kind=SignalKind.SELL_OFF,
+                    message=(
+                        f"⏰ [EOD] 尾盘强平卖出 {ctx.lot_size} 股 @ {price:.3f} {ctx.currency} | "
+                        f"触发：距收盘 ≤{rule.skip_close_min:g} 分钟 | "
+                        f"预估净价差 {pnl:.3f} {ctx.currency}"
+                    ),
+                    price=price,
+                    vwap=vwap,
+                    rsi=rsi,
+                    boll_upper=boll_upper,
+                    state=IntradayTState.AT_BASE,
+                )
+            )
+            _reset_to_base(ctx)
+            return events
+
         take_profit = price >= (ctx.entry_price + ctx.target_spread)
         technical_sell = (
             boll_upper is not None
             and rsi is not None
             and vwap is not None
             and price >= boll_upper
-            and rsi >= its.INTRADAY_T_RSI_SELL
-            and price > vwap * its.INTRADAY_T_VWAP_PREMIUM
+            and rsi >= rule.rsi_sell
+            and price > vwap * rule.vwap_premium
         )
         if take_profit or technical_sell:
             reason = (
@@ -355,10 +436,102 @@ def evaluate_intraday_t(
                     state=IntradayTState.AT_BASE,
                 )
             )
-            ctx.state = IntradayTState.AT_BASE
-            ctx.entry_price = None
-            if ctx.configured_spread is not None:
-                ctx.target_spread = ctx.configured_spread
+            _reset_to_base(ctx)
+        return events
+
+    # ----- 空仓：开仓 -----
+    if ctx.state != IntradayTState.AT_BASE:
+        return events
+
+    allow_open, _ = entry_window_allows_open(market=market, now=now, params=rule)
+    if not allow_open:
+        return events
+
+    sell_open_ready = (
+        boll_upper is not None
+        and rsi is not None
+        and vwap is not None
+        and price >= boll_upper
+        and rsi >= rule.rsi_sell
+        and price > vwap * rule.vwap_premium
+    )
+    buy_open_ready = (
+        boll_lower is not None
+        and rsi is not None
+        and vwap is not None
+        and price <= boll_lower
+        and rsi <= rule.rsi_buy
+        and price < vwap * rule.vwap_discount
+    )
+    if rule.entry_confirm:
+        sell_open_ready = (
+            sell_open_ready
+            and locked_close is not None
+            and boll_upper is not None
+            and locked_close >= boll_upper
+        )
+        buy_open_ready = (
+            buy_open_ready
+            and locked_close is not None
+            and boll_lower is not None
+            and locked_close <= boll_lower
+        )
+
+    boll_ratio = (
+        rule.spread_boll_ratio
+        if rule.spread_boll_ratio is not None
+        else its.INTRADAY_T_SPREAD_BOLL_RATIO
+    )
+
+    if sell_open_ready and not ctx.warning_uptrend:
+        ctx.state = IntradayTState.SHORT_T
+        ctx.entry_price = price
+        ctx.target_spread = resolve_entry_target_spread(
+            ctx.configured_spread if ctx.configured_spread is not None else ctx.target_spread,
+            boll_upper=boll_upper,
+            boll_lower=boll_lower,
+            boll_ratio=boll_ratio,
+        )
+        events.append(
+            SignalEvent(
+                kind=SignalKind.SELL,
+                message=(
+                    f"🚨 [SELL T] 建议卖出 {ctx.lot_size} 股 @ {price:.3f} {ctx.currency} | "
+                    f"锚定价={price:.3f} | 目标买回 <= {price - ctx.target_spread:.3f} {ctx.currency}"
+                ),
+                price=price,
+                vwap=vwap,
+                rsi=rsi,
+                boll_upper=boll_upper,
+                state=ctx.state,
+            )
+        )
+        return events
+
+    if buy_open_ready and not ctx.warning_downtrend:
+        ctx.state = IntradayTState.LONG_T
+        ctx.entry_price = price
+        ctx.target_spread = resolve_entry_target_spread(
+            ctx.configured_spread if ctx.configured_spread is not None else ctx.target_spread,
+            boll_upper=boll_upper,
+            boll_lower=boll_lower,
+            boll_ratio=boll_ratio,
+        )
+        events.append(
+            SignalEvent(
+                kind=SignalKind.BUY_T,
+                message=(
+                    f"🚨 [BUY T] 建议买入 {ctx.lot_size} 股 @ {price:.3f} {ctx.currency} | "
+                    f"锚定价={price:.3f} | 目标卖出 >= {price + ctx.target_spread:.3f} {ctx.currency}"
+                ),
+                price=price,
+                vwap=vwap,
+                rsi=rsi,
+                boll_upper=boll_upper,
+                state=ctx.state,
+            )
+        )
+        return events
 
     return events
 

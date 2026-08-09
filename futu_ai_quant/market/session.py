@@ -171,6 +171,62 @@ def is_trading_session(market: str, now: datetime | None = None) -> bool:
     return is_hk_trading_session(now)
 
 
+def _market_local_now(market: str, now: datetime | None = None) -> datetime:
+    """换算到该市场本地时钟（无时区则按本地已是该市场时间）。"""
+    if market.upper() == "US":
+        if now is None:
+            return datetime.now(_US_EASTERN)
+        if now.tzinfo is not None:
+            return now.astimezone(_US_EASTERN)
+        return now.replace(tzinfo=_US_EASTERN)
+
+    if now is None:
+        return datetime.now()
+    if now.tzinfo is not None:
+        return now.astimezone(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    return now
+
+
+def minutes_since_continuous_open(market: str, now: datetime | None = None) -> float | None:
+    """
+    距当前连续交易小节开盘的分钟数。
+
+    港股：上午 09:30 / 下午 13:00；美股：09:30。非连续交易时段返回 None。
+    """
+    local = _market_local_now(market, now)
+    minutes = local.hour * 60 + local.minute + local.second / 60.0
+    if market.upper() == "US":
+        if not is_us_trading_session(local):
+            return None
+        return minutes - (9 * 60 + 30)
+
+    if not is_hk_trading_session(local):
+        return None
+    if _HK_MORNING_OPEN <= minutes < _HK_MORNING_CLOSE:
+        return minutes - _HK_MORNING_OPEN
+    if _HK_AFTERNOON_OPEN <= minutes < _HK_AFTERNOON_CLOSE:
+        return minutes - _HK_AFTERNOON_OPEN
+    return None
+
+
+def minutes_until_day_close(market: str, now: datetime | None = None) -> float | None:
+    """
+    距当日常规收盘的分钟数（港股 16:00 / 美股 16:00 美东）。
+
+    午休或不在交易日连续时段时返回 None。
+    """
+    local = _market_local_now(market, now)
+    minutes = local.hour * 60 + local.minute + local.second / 60.0
+    if market.upper() == "US":
+        if not is_us_trading_session(local):
+            return None
+        return (16 * 60) - minutes
+
+    if not is_hk_trading_session(local):
+        return None
+    return (16 * 60) - minutes
+
+
 def hk_session_volume_fraction(now: datetime | None = None) -> float:
     """已过港股交易时间占全日交易时段比例（09:30-12:00 + 13:00-16:00），用于盘中量比折算。"""
     now = now or datetime.now()

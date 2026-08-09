@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import datetime
 
 import pandas as pd
 from futu import RET_OK, OpenQuoteContext, SubType
@@ -242,6 +243,8 @@ class IntradayTWatch:
             current_price=price,
             vwap=vwap,
             indicators=indicators,
+            now=datetime.now(),
+            code=sym.code,
         )
         self._emit_events(sym, events, indicators, price, vwap)
         self._maybe_print_status(sym, indicators, price, vwap)

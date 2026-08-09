@@ -25,7 +25,7 @@ import sys
 import time
 
 from dotenv import load_dotenv
-from futu import OpenQuoteContext, OpenSecTradeContext, RET_OK, SubType
+from futu import RET_OK, OpenQuoteContext, OpenSecTradeContext, SubType
 
 from futu_ai_quant.brokers.futu.intraday_kline import fetch_intraday_5m_klines
 from futu_ai_quant.brokers.futu.intraday_monitor import IntradayTMonitor, log_intraday_t
@@ -43,7 +43,12 @@ from futu_ai_quant.strategy import intraday_t_settings as its
 from futu_ai_quant.strategy.intraday_t import IntradayTContext
 from futu_ai_quant.strategy.intraday_t_cost import resolve_intraday_t_target_spread
 from futu_ai_quant.strategy.intraday_t_lot import resolve_intraday_t_lot_size
-from futu_ai_quant.strategy.intraday_t_replay import latest_trading_day, replay_intraday_t
+from futu_ai_quant.strategy.intraday_t_params import resolve_rule_params
+from futu_ai_quant.strategy.intraday_t_replay import (
+    latest_trading_day,
+    replay_intraday_t,
+    tune_intraday_t_replay,
+)
 from futu_ai_quant.utils.logging import log
 from futu_ai_quant.utils.retry import retry_call
 
@@ -130,7 +135,26 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="回放节拍秒（0=尽快跑完，默认 0）",
     )
+    parser.add_argument(
+        "--tune",
+        action="store_true",
+        help="回放模式下对 RSI 买卖阈值网格调参（需同时加 --replay）",
+    )
+    parser.add_argument(
+        "--tune-rsi-sell",
+        default="70,75,80",
+        help="调参：RSI 卖出阈值列表，逗号分隔（默认 70,75,80）",
+    )
+    parser.add_argument(
+        "--tune-rsi-buy",
+        default="30,35,40",
+        help="调参：RSI 买入阈值列表，逗号分隔（默认 30,35,40）",
+    )
     return parser.parse_args()
+
+
+def _parse_float_csv(raw: str) -> list[float]:
+    return [float(x.strip()) for x in str(raw).split(",") if x.strip()]
 
 
 def _run_replay(args: argparse.Namespace, code: str, ctx: IntradayTContext) -> int:
@@ -140,7 +164,7 @@ def _run_replay(args: argparse.Namespace, code: str, ctx: IntradayTContext) -> i
 
     def _on_event(event, header: str) -> None:
         log_intraday_t(f"[回放] {header}\n{event.message}")
-        if args.no_bark:
+        if args.no_bark or args.tune:
             return
         notify_intraday_signal(code, event, header, sync=True)
 
@@ -170,11 +194,45 @@ def _run_replay(args: argparse.Namespace, code: str, ctx: IntradayTContext) -> i
         log_intraday_t(f"回放 K 线来源: {source}")
 
         replay_day = args.replay_day or latest_trading_day(kline)
+        rule = resolve_rule_params(code)
         log_intraday_t(
             f"开始历史回放 | 标的={code} | 交易日={replay_day} | "
             f"拉取K线={len(kline)} 根 | 节拍={args.replay_speed:g}s | "
-            f"通知={notify_channels_label()}"
+            f"通知={notify_channels_label()} | "
+            f"止损={rule.stop_loss_mult:g}× | 开盘禁={rule.skip_open_min:g}分 | "
+            f"尾盘={rule.skip_close_min:g}分 | 开仓确认={'开' if rule.entry_confirm else '关'}"
         )
+
+        if args.tune:
+            rows = tune_intraday_t_replay(
+                kline,
+                code=code,
+                day=replay_day,
+                rsi_sells=_parse_float_csv(args.tune_rsi_sell),
+                rsi_buys=_parse_float_csv(args.tune_rsi_buy),
+                base_ctx=ctx,
+            )
+            log_intraday_t(
+                f"调参结果（按近似每股盈亏排序）| 标的={code} | 日={replay_day} | "
+                f"候选={len(rows)}"
+            )
+            log_intraday_t(
+                f"{'RSI卖':>6} {'RSI买':>6} {'卖T':>4} {'买回':>4} "
+                f"{'买T':>4} {'卖平':>4} {'往返':>4} {'每股PnL':>10}"
+            )
+            for row in rows:
+                log_intraday_t(
+                    f"{row.rsi_sell:6.1f} {row.rsi_buy:6.1f} "
+                    f"{row.sell:4d} {row.buy_back:4d} {row.buy_t:4d} {row.sell_off:4d} "
+                    f"{row.round_trips:4d} {row.approx_pnl:10.3f}"
+                )
+            if rows:
+                best = rows[0]
+                log_intraday_t(
+                    f"建议写入 INTRADAY_T_CODE_PARAMS: "
+                    f'{{"{code}":{{"rsi_sell":{best.rsi_sell:g},"rsi_buy":{best.rsi_buy:g}}}}}'
+                )
+            return 0
 
         result = replay_intraday_t(
             kline,
@@ -182,6 +240,7 @@ def _run_replay(args: argparse.Namespace, code: str, ctx: IntradayTContext) -> i
             ctx=ctx,
             day=replay_day,
             speed_sec=args.replay_speed,
+            params=rule,
             on_event=_on_event,
         )
 
@@ -190,7 +249,7 @@ def _run_replay(args: argparse.Namespace, code: str, ctx: IntradayTContext) -> i
             f"评估点={result.ticks_processed} | "
             f"卖出T={result.sell_count} | 买入T={result.buy_t_count} | "
             f"买回={result.buy_back_count} | 卖出平仓={result.sell_off_count} | "
-            f"预警={result.warning_count}"
+            f"预警={result.warning_count} | 近似每股PnL={result.approx_pnl:.3f}"
         )
         if result.sell_count == 0 and result.buy_back_count == 0 and result.buy_t_count == 0:
             log_intraday_t("当日未触发买卖信号（属正常情况，可换 --replay-day 或调低阈值试演）")
@@ -281,6 +340,10 @@ def main() -> None:
 
     host = os.getenv("FUTU_OPEND_HOST", "127.0.0.1")
     port = int(os.getenv("FUTU_OPEND_PORT", "11111"))
+
+    if args.tune and not args.replay:
+        log_intraday_t("--tune 需配合 --replay 使用，例如：futu-intraday-t --replay --tune --no-bark")
+        sys.exit(2)
 
     if args.replay:
         ctx = IntradayTContext(
