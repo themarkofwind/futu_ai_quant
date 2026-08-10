@@ -18,7 +18,10 @@ from futu_ai_quant.config.watchlist import (
 from futu_ai_quant.indicators.technical import compute_timeframe_indicators
 from futu_ai_quant.market.lot import resolve_lot_size_detail
 from futu_ai_quant.planning.option import empty_option_trade_plan
-from futu_ai_quant.planning.stock import build_stock_trade_plan
+from futu_ai_quant.planning.stock import (
+    build_stock_trade_plan,
+    overlay_intraday_onto_daily_for_plan,
+)
 from futu_ai_quant.strategy.profile import build_watchlist_strategy_profile
 from futu_ai_quant.strategy.signals import resolve_watchlist_combined_signal
 
@@ -95,12 +98,13 @@ def analyze_watchlist_stock(
     attach_data_quality(enriched, snapshot=snapshot, lot_confirmed=lot_confirmed)
     combined = enriched["combined_swing_signal"]
 
-    # 盘中 ATR 优先用于价带，使 13:05/15:45 区间更贴近日间波动
+    # 盘中周期优先：ATR/布林/技术收盘一并覆盖，避免日K复权轨与分钟轨混用
+    enriched_for_plan = enriched
     if use_intraday and intraday and not intraday.get("error") and intraday.get("atr") is not None:
-        daily_for_plan = {**daily, "atr": intraday.get("atr"), "technical_close": intraday.get("technical_close")}
-        enriched_for_plan = {**enriched, "daily": daily_for_plan}
-    else:
-        enriched_for_plan = enriched
+        enriched_for_plan = {
+            **enriched,
+            "daily": overlay_intraday_onto_daily_for_plan(daily, intraday),
+        }
 
     stock_trade_plan = build_stock_trade_plan(
         enriched_for_plan,

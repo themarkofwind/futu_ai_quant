@@ -3,7 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from futu_ai_quant.analysis.data_quality import apply_data_quality_to_trade_plan
-from futu_ai_quant.indicators.technical import scale_atr_to_market
+from futu_ai_quant.indicators.technical import (
+    scale_atr_to_market,
+    scale_price_level_to_market,
+)
 from futu_ai_quant.market.fees import (
     swing_trade_meets_cost_threshold,
 )
@@ -17,6 +20,8 @@ _HOLDING_FAR_ATR = 1.5
 _WATCHLIST_HALF_ATR = 0.25
 _WATCHLIST_HALF_MAX_PCT = 0.006  # 现价的 0.6%
 _WATCHLIST_ANCHOR_ATR = 0.5
+# 布林锚点相对现价最大偏离；超出则退回 ATR，避免复权/过期日K把参考价拉飞
+_WATCHLIST_BOLL_MAX_DEV_PCT = 0.10
 
 
 def _sell_swing_band(
@@ -57,14 +62,37 @@ def _centered_band(center: float, half: float) -> tuple[float, float]:
     return round(center - half, 3), round(center + half, 3)
 
 
+def _boll_anchor_usable(market_price: float, level: float | None) -> bool:
+    if level is None or market_price <= 0:
+        return False
+    return abs(level - market_price) / market_price <= _WATCHLIST_BOLL_MAX_DEV_PCT
+
+
+def _scale_watchlist_boll(
+    boll_lower: float | None,
+    boll_upper: float | None,
+    *,
+    technical_close: float | None,
+    market_price: float | None,
+) -> tuple[float | None, float | None]:
+    return (
+        scale_price_level_to_market(boll_lower, technical_close, market_price),
+        scale_price_level_to_market(boll_upper, technical_close, market_price),
+    )
+
+
 def _watchlist_buy_band(
     market_price: float,
     atr_market: float | None,
     *,
     boll_lower: float | None = None,
 ) -> tuple[float, float, float]:
-    """返回 (low, high, preferred)。优先锚布林下轨。"""
-    if boll_lower is not None and boll_lower < market_price:
+    """返回 (low, high, preferred)。优先锚近端布林下轨，否则 ATR。"""
+    if (
+        boll_lower is not None
+        and boll_lower < market_price
+        and _boll_anchor_usable(market_price, boll_lower)
+    ):
         center = boll_lower
     elif atr_market is not None:
         center = market_price - _WATCHLIST_ANCHOR_ATR * atr_market
@@ -81,8 +109,12 @@ def _watchlist_sell_band(
     *,
     boll_upper: float | None = None,
 ) -> tuple[float, float, float]:
-    """返回 (low, high, preferred)。优先锚布林上轨。"""
-    if boll_upper is not None and boll_upper > market_price:
+    """返回 (low, high, preferred)。优先锚近端布林上轨，否则 ATR。"""
+    if (
+        boll_upper is not None
+        and boll_upper > market_price
+        and _boll_anchor_usable(market_price, boll_upper)
+    ):
         center = boll_upper
     elif atr_market is not None:
         center = market_price + _WATCHLIST_ANCHOR_ATR * atr_market
@@ -280,9 +312,10 @@ def build_stock_trade_plan(
         return plan
 
     daily = stock.get("daily") or {}
+    technical_close = safe_float(daily.get("technical_close"))
     atr_market = scale_atr_to_market(
         safe_float(daily.get("atr")),
-        safe_float(daily.get("technical_close")),
+        technical_close,
         market_price,
     )
     if atr_market is not None:
@@ -293,6 +326,14 @@ def build_stock_trade_plan(
     is_watchlist = str(stock.get("position_type") or "") == "WATCHLIST" or (
         str(swing_strategy.get("loss_tier") or "") == "watchlist"
     )
+    if is_watchlist and market_price is not None:
+        # 前复权布林轨 → 未复权现价空间，再交给近端偏离校验
+        boll_lower, boll_upper = _scale_watchlist_boll(
+            boll_lower,
+            boll_upper,
+            technical_close=technical_close,
+            market_price=market_price,
+        )
 
     if market_price is not None:
         if signal == "SELL_SWING":
@@ -400,4 +441,19 @@ def empty_stock_trade_plan() -> dict[str, Any]:
         "trigger_price_low": None,
         "trigger_price_high": None,
         "watch_triggers": [],
+    }
+
+
+def overlay_intraday_onto_daily_for_plan(
+    daily: dict[str, Any],
+    intraday: dict[str, Any],
+) -> dict[str, Any]:
+    """盘中槽位：用分钟K的 ATR/布林/收盘覆盖日K，保持技术价同源。"""
+    return {
+        **daily,
+        "atr": intraday.get("atr"),
+        "technical_close": intraday.get("technical_close") or daily.get("technical_close"),
+        "boll_upper": intraday.get("boll_upper") or daily.get("boll_upper"),
+        "boll_mid": intraday.get("boll_mid") or daily.get("boll_mid"),
+        "boll_lower": intraday.get("boll_lower") or daily.get("boll_lower"),
     }

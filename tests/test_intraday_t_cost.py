@@ -67,6 +67,40 @@ class TestIntradayTCost:
         assert boll_width_target_spread(130.0, 126.0, ratio=0.0) == 0.0
         assert boll_width_target_spread(None, 126.0, ratio=0.45) == 0.0
 
-    def test_resolve_entry_uses_max_of_base_and_boll(self) -> None:
-        assert resolve_entry_target_spread(1.2, boll_upper=145.0, boll_lower=138.0) == 3.15
-        assert resolve_entry_target_spread(2.5, boll_upper=130.0, boll_lower=128.0) == 2.5
+    def test_resolve_entry_uses_max_of_base_boll_mid_and_pct(self) -> None:
+        # base 1.2；带宽×0.45=3.15；到中轨=3.5；价×1.5%=2.07 → 取 3.5
+        assert (
+            resolve_entry_target_spread(
+                1.2,
+                boll_upper=145.0,
+                boll_lower=138.0,
+                boll_ratio=0.45,
+                entry_price=138.0,
+                min_pct=0.015,
+            )
+            == 3.5
+        )
+        # 带宽很小、中轨很近时，百分比地板生效
+        assert (
+            resolve_entry_target_spread(
+                1.2,
+                boll_upper=138.5,
+                boll_lower=137.5,
+                boll_ratio=0.45,
+                entry_price=138.0,
+                min_pct=0.015,
+            )
+            == 2.07
+        )
+        # 显式关闭百分比与布林比例时，退回 base
+        assert (
+            resolve_entry_target_spread(
+                2.5,
+                boll_upper=130.0,
+                boll_lower=128.0,
+                boll_ratio=0.0,
+                entry_price=129.0,
+                min_pct=0.0,
+            )
+            == 2.5
+        )

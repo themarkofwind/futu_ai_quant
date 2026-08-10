@@ -158,6 +158,80 @@ def test_watchlist_bands_are_tighter_than_holding_bands() -> None:
     assert "120" in text
 
 
+def test_watchlist_rejects_far_qfq_boll_anchors() -> None:
+    """前复权日K布林与未复权现价脱节时，应缩放后仍过远则退回 ATR 锚。"""
+    stock = {
+        "code": "HK.01347",
+        "qty": 0,
+        "can_sell_qty": 0,
+        "lot_size": 100,
+        "lot_confirmed": True,
+        "position_type": "WATCHLIST",
+        "daily": {
+            # 旧日K：收盘 86、下轨 70、上轨 110；现价 141 → 缩放后仍远离现价
+            "atr": 6.5,
+            "technical_close": 86.0,
+            "boll_lower": 70.0,
+            "boll_upper": 110.0,
+            "swing_signal": "HOLD",
+        },
+        "weekly": {"swing_signal": "HOLD"},
+        "swing_strategy": {"loss_tier": "watchlist"},
+        "combined_swing_signal": {"effective_signal": "HOLD"},
+        "pnl": {"market_price": 141.2},
+        "data_quality": {"status": "ok", "issues": []},
+    }
+    plan = build_stock_trade_plan(
+        stock,
+        stock["swing_strategy"],
+        stock["combined_swing_signal"],
+        {"lot_size": 100},
+        stock["pnl"],
+    )
+    buy = next(w for w in plan["watch_triggers"] if w["side"] == "buy")
+    sell = next(w for w in plan["watch_triggers"] if w["side"] == "sell")
+    atr_m = 6.5 / 86.0 * 141.2
+    assert buy["preferred_price"] == round(141.2 - 0.5 * atr_m, 3)
+    assert sell["preferred_price"] == round(141.2 + 0.5 * atr_m, 3)
+    assert abs(buy["preferred_price"] - 141.2) / 141.2 < 0.08
+    assert abs(sell["preferred_price"] - 141.2) / 141.2 < 0.08
+
+
+def test_watchlist_scales_near_qfq_boll_to_market() -> None:
+    """轻度复权偏离时，布林锚按 technical_close→market 比例缩放后仍可用。"""
+    stock = {
+        "code": "HK.09988",
+        "qty": 0,
+        "can_sell_qty": 0,
+        "lot_size": 100,
+        "lot_confirmed": True,
+        "position_type": "WATCHLIST",
+        "daily": {
+            "atr": 2.0,
+            "technical_close": 130.0,
+            "boll_lower": 125.0,  # 缩放后 ≈ 125/130*124 = 119.23，距现价约 3.8%
+            "boll_upper": 136.0,  # 缩放后 ≈ 129.72，距现价约 4.6%
+            "swing_signal": "HOLD",
+        },
+        "weekly": {"swing_signal": "HOLD"},
+        "swing_strategy": {"loss_tier": "watchlist"},
+        "combined_swing_signal": {"effective_signal": "HOLD"},
+        "pnl": {"market_price": 124.0},
+        "data_quality": {"status": "ok", "issues": []},
+    }
+    plan = build_stock_trade_plan(
+        stock,
+        stock["swing_strategy"],
+        stock["combined_swing_signal"],
+        {"lot_size": 100},
+        stock["pnl"],
+    )
+    buy = next(w for w in plan["watch_triggers"] if w["side"] == "buy")
+    sell = next(w for w in plan["watch_triggers"] if w["side"] == "sell")
+    assert buy["preferred_price"] == round(125.0 / 130.0 * 124.0, 3)
+    assert sell["preferred_price"] == round(136.0 / 130.0 * 124.0, 3)
+
+
 def test_watchlist_sell_trigger_uses_narrow_band() -> None:
     stock = {
         "code": "HK.01347",

@@ -491,6 +491,7 @@ def evaluate_intraday_t(
             boll_upper=boll_upper,
             boll_lower=boll_lower,
             boll_ratio=boll_ratio,
+            entry_price=price,
         )
         events.append(
             SignalEvent(
@@ -516,6 +517,7 @@ def evaluate_intraday_t(
             boll_upper=boll_upper,
             boll_lower=boll_lower,
             boll_ratio=boll_ratio,
+            entry_price=price,
         )
         events.append(
             SignalEvent(

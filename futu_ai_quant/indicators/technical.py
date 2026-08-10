@@ -263,3 +263,16 @@ def scale_atr_to_market(
     if atr is None or technical_close in (None, 0) or market_price is None:
         return None
     return round(atr / technical_close * market_price, 4)
+
+
+def scale_price_level_to_market(
+    level: float | None,
+    technical_close: float | None,
+    market_price: float | None,
+) -> float | None:
+    """将前复权技术价位映射到未复权现价空间（与 ATR 缩放同一比例）。"""
+    if level is None or technical_close in (None, 0) or market_price is None:
+        return level
+    if abs(technical_close - market_price) < 1e-9:
+        return level
+    return round(level / technical_close * market_price, 4)

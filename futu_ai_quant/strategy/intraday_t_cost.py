@@ -72,22 +72,72 @@ def boll_width_target_spread(
     return _round_up_spread(width * ratio)
 
 
+def boll_mid_target_spread(
+    boll_upper: float | None,
+    boll_lower: float | None,
+    entry_price: float | None,
+) -> float:
+    """
+    以布林中轨为均值回归目标：返回 |中轨 − 开仓价|。
+
+    低吸开在下轨附近时，避免硬止盈仍停在下轨一带（今日华虹 +1.5 即此问题）。
+    """
+    if (
+        boll_upper is None
+        or boll_lower is None
+        or entry_price is None
+        or entry_price <= 0
+    ):
+        return 0.0
+    mid = (boll_upper + boll_lower) / 2.0
+    dist = abs(mid - entry_price)
+    if dist <= 0:
+        return 0.0
+    return _round_up_spread(dist)
+
+
+def price_pct_target_spread(
+    entry_price: float | None,
+    *,
+    min_pct: float | None = None,
+) -> float:
+    """按开仓价百分比估算最低目标价差。"""
+    if min_pct is None:
+        min_pct = its.INTRADAY_T_SPREAD_MIN_PCT
+    if min_pct <= 0 or entry_price is None or entry_price <= 0:
+        return 0.0
+    return _round_up_spread(entry_price * min_pct)
+
+
 def resolve_entry_target_spread(
     base_spread: float,
     *,
     boll_upper: float | None = None,
     boll_lower: float | None = None,
     boll_ratio: float | None = None,
+    entry_price: float | None = None,
+    min_pct: float | None = None,
 ) -> float:
     """
-    开仓时锁定有效目标价差：``max(base, 布林带宽 × 比例)``。
+    开仓时锁定有效目标价差：
+
+    ``max(base, 布林带宽×比例, |中轨−开仓价|, 开仓价×最低百分比)``
 
     ``base`` 通常已是 ``max(手动配置, 费用地板)``。
     """
+    floors = [float(base_spread)]
     boll_floor = boll_width_target_spread(
         boll_upper, boll_lower, ratio=boll_ratio
     )
-    return max(float(base_spread), boll_floor)
+    if boll_floor > 0:
+        floors.append(boll_floor)
+    mid_floor = boll_mid_target_spread(boll_upper, boll_lower, entry_price)
+    if mid_floor > 0:
+        floors.append(mid_floor)
+    pct_floor = price_pct_target_spread(entry_price, min_pct=min_pct)
+    if pct_floor > 0:
+        floors.append(pct_floor)
+    return max(floors)
 
 
 def resolve_price_for_cost(quote_ctx: OpenQuoteContext, code: str) -> float | None:

@@ -20,6 +20,7 @@ from futu_ai_quant.strategy.intraday_t import (
     evaluate_intraday_t,
     indicators_from_kline,
 )
+from futu_ai_quant.strategy.intraday_t_params import IntradayTRuleParams
 
 
 def _make_kline_frame(n: int = 30, base: float = 100.0, spread: float = 0.2) -> pd.DataFrame:
@@ -104,8 +105,8 @@ class TestIntradayTStateMachine:
         assert any(e.kind == SignalKind.SELL for e in events)
         assert ctx.state == IntradayTState.SHORT_T
         assert ctx.entry_price == 110.0
-        # 带宽 10 × 0.45 = 4.5，高于默认 1.2
-        assert ctx.target_spread == 4.5
+        # 到中轨 |100-110|=10，大于带宽×0.7=7 与价×1.5%
+        assert ctx.target_spread == 10.0
 
     def test_buy_t_signal_when_oversold(self) -> None:
         ctx = IntradayTContext()
@@ -119,37 +120,44 @@ class TestIntradayTStateMachine:
         assert any(e.kind == SignalKind.BUY_T for e in events)
         assert ctx.state == IntradayTState.LONG_T
         assert ctx.entry_price == 90.0
-        assert ctx.target_spread == 4.5
+        assert ctx.target_spread == 10.0
 
-    def test_open_keeps_base_spread_when_boll_narrow(self, monkeypatch) -> None:
+    def test_open_keeps_base_spread_when_near_mid_and_narrow(
+        self, monkeypatch
+    ) -> None:
         import futu_ai_quant.strategy.intraday_t_settings as its
 
         monkeypatch.setattr(its, "INTRADAY_T_SPREAD_BOLL_RATIO", 0.45)
+        monkeypatch.setattr(its, "INTRADAY_T_SPREAD_MIN_PCT", 0.0)
         ctx = IntradayTContext(target_spread=1.2)
-        # 带宽 2.0 → 0.9 < 1.2，保持配置下限
-        indicators = self._rich_indicators(close=110.0, rsi=80.0, upper=101.0, lower=99.0)
+        # 开在上轨：到中轨≈0.85，带宽×0.45≈0.68，均低于 base → 1.2
+        indicators = self._rich_indicators(close=102.1, rsi=80.0, upper=102.0, lower=100.3)
         evaluate_intraday_t(
             ctx,
-            current_price=110.0,
+            current_price=102.1,
             vwap=100.0,
             indicators=indicators,
+            params=IntradayTRuleParams(skip_open_min=0, skip_close_min=0, entry_confirm=False),
         )
         assert ctx.state == IntradayTState.SHORT_T
         assert ctx.target_spread == 1.2
 
-    def test_open_ignores_boll_when_ratio_zero(self, monkeypatch) -> None:
+    def test_open_ignores_boll_width_when_ratio_zero(self, monkeypatch) -> None:
         import futu_ai_quant.strategy.intraday_t_settings as its
 
         monkeypatch.setattr(its, "INTRADAY_T_SPREAD_BOLL_RATIO", 0.0)
+        monkeypatch.setattr(its, "INTRADAY_T_SPREAD_MIN_PCT", 0.0)
         ctx = IntradayTContext(target_spread=1.2)
+        # 带宽项关闭，但仍取到中轨距离 10
         indicators = self._rich_indicators(close=110.0, rsi=80.0, upper=105.0, lower=95.0)
         evaluate_intraday_t(
             ctx,
             current_price=110.0,
             vwap=100.0,
             indicators=indicators,
+            params=IntradayTRuleParams(skip_open_min=0, skip_close_min=0, entry_confirm=False),
         )
-        assert ctx.target_spread == 1.2
+        assert ctx.target_spread == 10.0
 
     def test_sell_blocked_by_vwap_premium(self) -> None:
         ctx = IntradayTContext()
@@ -176,7 +184,7 @@ class TestIntradayTStateMachine:
         assert ctx.state == IntradayTState.AT_BASE
 
     def test_buy_back_take_profit(self) -> None:
-        ctx = IntradayTContext()
+        ctx = IntradayTContext(target_spread=1.2)
         ctx.state = IntradayTState.SHORT_T
         ctx.entry_price = 110.0
         indicators = self._rich_indicators(close=108.5, rsi=50.0, upper=115.0, lower=95.0)
@@ -204,7 +212,7 @@ class TestIntradayTStateMachine:
         assert ctx.state == IntradayTState.AT_BASE
 
     def test_sell_off_take_profit(self) -> None:
-        ctx = IntradayTContext()
+        ctx = IntradayTContext(target_spread=1.2)
         ctx.state = IntradayTState.LONG_T
         ctx.entry_price = 90.0
         indicators = self._rich_indicators(close=91.5, rsi=50.0, upper=105.0, lower=85.0)
